@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1080" viewBox="0 0 1600 1080">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#455A64"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#263238" flood-opacity=".16"/>
+    </filter>
+  </defs>
+  <rect width="1600" height="1080" fill="#F8FAFB"/>
+  <text x="800" y="48" text-anchor="middle" font-family="Arial" font-size="29" font-weight="700" fill="#263238">Esquema ER normalizado — Datos Pulso TransMi</text>
+  <text x="800" y="78" text-anchor="middle" font-family="Arial" font-size="15" fill="#607D8B">8 tablas con utilidad propia para migración, consulta y control de calidad</text>
+
+  <!-- Relationships -->
+  <g stroke="#455A64" stroke-width="2" fill="none" marker-end="url(#arrow)">
+    <path d="M270 245 H365"/>
+    <path d="M270 310 L365 520"/>
+    <path d="M755 245 H845"/>
+    <path d="M755 310 L845 520"/>
+    <path d="M1235 245 H1325"/>
+    <path d="M1235 310 L1325 520"/>
+    <path d="M755 580 H845"/>
+    <path d="M1235 580 H1325"/>
+    <path d="M755 645 L845 800"/>
+  </g>
+  <g font-family="Arial" font-size="13" font-weight="700" fill="#D71920">
+    <text x="285" y="237">1</text><text x="345" y="237">N</text>
+    <text x="285" y="327">1</text><text x="345" y="503">N</text>
+    <text x="770" y="237">1</text><text x="825" y="237">N</text>
+    <text x="770" y="327">1</text><text x="825" y="503">N</text>
+    <text x="1250" y="237">1</text><text x="1305" y="237">N</text>
+    <text x="1250" y="327">1</text><text x="1305" y="503">N</text>
+    <text x="770" y="572">1</text><text x="825" y="572">N</text>
+    <text x="1250" y="572">1</text><text x="1305" y="572">N</text>
+    <text x="770" y="665">1</text><text x="825" y="785">N</text>
+  </g>
+
+  <!-- Corridors -->
+  <g filter="url(#shadow)" font-family="Arial">
+    <rect x="40" y="165" width="230" height="170" rx="8" fill="white" stroke="#D71920" stroke-width="2"/>
+    <rect x="40" y="165" width="230" height="42" rx="8" fill="#D71920"/>
+    <text x="155" y="193" text-anchor="middle" font-size="18" font-weight="700" fill="white">CORRIDORS</text>
+    <text x="57" y="236" font-size="15" font-weight="700" fill="#F4C300">PK corridor_id</text>
+    <text x="57" y="266" font-size="15" fill="#263238">corridor_name</text>
+    <text x="57" y="296" font-size="15" fill="#263238">description</text>
+    <text x="57" y="326" font-size="15" fill="#263238">active</text>
+  </g>
+
+  <!-- Stations -->
+  <g filter="url(#shadow)" font-family="Arial">
+    <rect x="365" y="165" width="390" height="200" rx="8" fill="white" stroke="#D71920" stroke-width="2"/>
+    <rect x="365" y="165" width="390" height="42" rx="8" fill="#D71920"/>
+    <text x="560" y="193" text-anchor="middle" font-size="18" font-weight="700" fill="white">STATIONS</text>
+    <text x="382" y="236" font-size="15" font-weight="700" fill="#F4C300">PK station_id</text>
+    <text x="382" y="266" font-size="15" font-weight="700" fill="#005EB8">FK corridor_id</text>
+    <text x="382" y="296" font-size="15" fill="#263238">station_name</text>
+    <text x="382" y="326" font-size="15" fill="#263238">latitude, longitude</text>
+    <text x="382" y="356" font-size="15" fill="#263238">valid_from, valid_to</text>
+  </g>
+
+  <!-- Time slots -->
+  <g filter="url(#shadow)" font-family="Arial">
+    <rect x="845" y="165" width="390" height="200" rx="8" fill="white" stroke="#F4C300" stroke-width="2"/>
+    <rect x="845" y="165" width="390" height="42" rx="8" fill="#F4C300"/>
+    <text x="1040" y="193" text-anchor="middle" font-size="18" font-weight="700" fill="#263238">TIME_SLOTS</text>
+    <text x="862" y="236" font-size="15" font-weight="700" fill="#263238">PK observed_at</text>
+    <text x="862" y="266" font-size="15" fill="#263238">date</text>
+    <text x="862" y="296" font-size="15" fill="#263238">hour, minute</text>
+    <text x="862" y="326" font-size="15" fill="#263238">weekday</text>
+    <text x="862" y="356" font-size="15" fill="#263238">is_weekend</text>
+  </g>
+
+  <!-- Ingestion -->
+  <g filter="url(#shadow)" font-family="Arial">
+    <rect x="1325" y="165" width="230" height="200" rx="8" fill="white" stroke="#607D8B" stroke-width="2"/>
+    <rect x="1325" y="165" width="230" height="42" rx="8" fill="#607D8B"/>
+    <text x="1440" y="193" text-anchor="middle" font-size="16" font-weight="700" fill="white">INGESTION_BATCHES</text>
+    <text x="1342" y="236" font-size="15" font-weight="700" fill="#F4C300">PK ingestion_id</text>
+    <text x="1342" y="266" font-size="15" fill="#263238">source_name</text>
+    <text x="1342" y="296" font-size="15" fill="#263238">started_at, finished_at</text>
+    <text x="1342" y="326" font-size="15" fill="#263238">cutoff_at</text>
+    <text x="1342" y="356" font-size="15" fill="#263238">status, rows_loaded</text>
+  </g>
+
+  <!-- Demand -->
+  <g filter="url(#shadow)" font-family="Arial">
+    <rect x="365" y="470" width="390" height="220" rx="8" fill="white" stroke="#005EB8" stroke-width="2"/>
+    <rect x="365" y="470" width="390" height="42" rx="8" fill="#005EB8"/>
+    <text x="560" y="498" text-anchor="middle" font-size="18" font-weight="700" fill="white">DEMAND_OBSERVATIONS</text>
+    <text x="382" y="541" font-size="15" font-weight="700" fill="#F4C300">PK station_id + observed_at</text>
+    <text x="382" y="571" font-size="15" font-weight="700" fill="#005EB8">FK station_id</text>
+    <text x="382" y="601" font-size="15" font-weight="700" fill="#005EB8">FK observed_at</text>
+    <text x="382" y="631" font-size="15" fill="#263238">demand</text>
+    <text x="382" y="661" font-size="15" font-weight="700" fill="#005EB8">FK ingestion_id</text>
+  </g>
+
+  <!-- Weather -->
+  <g filter="url(#shadow)" font-family="Arial">
+    <rect x="845" y="470" width="390" height="220" rx="8" fill="white" stroke="#005EB8" stroke-width="2"/>
+    <rect x="845" y="470" width="390" height="42" rx="8" fill="#005EB8"/>
+    <text x="1040" y="498" text-anchor="middle" font-size="18" font-weight="700" fill="white">WEATHER_OBSERVATIONS</text>
+    <text x="862" y="541" font-size="15" font-weight="700" fill="#F4C300">PK/FK observed_at</text>
+    <text x="862" y="571" font-size="15" fill="#263238">rain_mm, rain_forecast</text>
+    <text x="862" y="601" font-size="15" fill="#263238">temperature_c</text>
+    <text x="862" y="631" font-size="15" fill="#263238">temperature_forecast</text>
+    <text x="862" y="661" font-size="15" font-weight="700" fill="#005EB8">FK ingestion_id</text>
+  </g>
+
+  <!-- Event context -->
+  <g filter="url(#shadow)" font-family="Arial">
+    <rect x="1325" y="470" width="230" height="220" rx="8" fill="white" stroke="#005EB8" stroke-width="2"/>
+    <rect x="1325" y="470" width="230" height="42" rx="8" fill="#005EB8"/>
+    <text x="1440" y="498" text-anchor="middle" font-size="17" font-weight="700" fill="white">EVENT_OBSERVATIONS</text>
+    <text x="1342" y="541" font-size="15" font-weight="700" fill="#F4C300">PK/FK observed_at</text>
+    <text x="1342" y="571" font-size="15" fill="#263238">event_intensity</text>
+    <text x="1342" y="601" font-size="15" fill="#263238">event_type nullable</text>
+    <text x="1342" y="631" font-size="15" fill="#263238">event_name nullable</text>
+    <text x="1342" y="661" font-size="15" font-weight="700" fill="#005EB8">FK ingestion_id</text>
+  </g>
+
+  <!-- Quality -->
+  <g filter="url(#shadow)" font-family="Arial">
+    <rect x="845" y="800" width="390" height="200" rx="8" fill="white" stroke="#F4C300" stroke-width="2"/>
+    <rect x="845" y="800" width="390" height="42" rx="8" fill="#F4C300"/>
+    <text x="1040" y="828" text-anchor="middle" font-size="18" font-weight="700" fill="#263238">DATA_QUALITY_ISSUES</text>
+    <text x="862" y="871" font-size="15" font-weight="700" fill="#263238">PK issue_id</text>
+    <text x="862" y="901" font-size="15" font-weight="700" fill="#005EB8">FK ingestion_id</text>
+    <text x="862" y="931" font-size="15" fill="#263238">table_name, record_key</text>
+    <text x="862" y="961" font-size="15" fill="#263238">issue_type, severity, details</text>
+  </g>
+
+  <!-- Relationship captions -->
+  <g font-family="Arial" font-size="13" fill="#607D8B">
+    <text x="287" y="223">agrupa</text><text x="287" y="390">ubica</text>
+    <text x="775" y="223">define tiempo</text><text x="775" y="390">registra</text>
+    <text x="1250" y="223">origina carga</text><text x="1250" y="390">origina carga</text>
+    <text x="775" y="558">comparte tiempo</text><text x="1250" y="558">comparte tiempo</text>
+    <text x="775" y="704">reporta</text>
+  </g>
+  <rect x="40" y="1020" width="1515" height="35" rx="5" fill="#ECEFF1"/>
+  <text x="58" y="1043" font-family="Arial" font-size="13" fill="#263238"><tspan font-weight="700">Nota:</tspan> las agregaciones diarias y horarias deben ser vistas o procesos derivados, no tablas fuente. PK = clave primaria · FK = clave foránea.</text>
+</svg>

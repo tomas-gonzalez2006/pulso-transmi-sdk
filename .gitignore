@@ -8,4 +8,5 @@ dist/
 build/
 artifacts/
 data/
+supabase/.temp/
 *.egg-info/

@@ -15,7 +15,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-ml = ["scikit-learn>=1.5,<2"]
+ml = ["scikit-learn>=1.5,<2", "xgboost>=3.0,<4"]
+tfx = ["tfx>=1.15,<2"]
 dev = ["pytest>=8,<9"]
 
 [tool.setuptools.packages.find]

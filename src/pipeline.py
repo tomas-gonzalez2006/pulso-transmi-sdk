@@ -1,0 +1,146 @@
+"""Train, predict and submit the current Pulso TransMi forecast cycle."""
+
+from __future__ import annotations
+
+import io
+import math
+import os
+import subprocess
+from datetime import datetime, timezone
+
+import httpx
+import pandas as pd
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+
+
+BASE_URL = os.getenv("PULSO_API_URL", "https://pulso-transmi.72-60-245-2.sslip.io").rstrip("/")
+API_KEY = os.getenv("PULSO_API_KEY")
+
+
+def api_get(client: httpx.Client, path: str) -> dict:
+    response = client.get(path)
+    if response.status_code == 404 and path == "/v1/forecast-cycles/current":
+        return {}
+    response.raise_for_status()
+    return response.json()
+
+
+def add_features(frame: pd.DataFrame) -> pd.DataFrame:
+    data = frame.sort_values(["station_id", "observed_at"]).copy()
+    local = data["observed_at"].dt.tz_convert("America/Bogota")
+    data["hour"] = local.dt.hour
+    data["day_of_week"] = local.dt.dayofweek
+    data["hour_sin"] = (local.dt.hour * 60 + local.dt.minute).map(lambda value: math.sin(2 * math.pi * value / 1440))
+    data["hour_cos"] = (local.dt.hour * 60 + local.dt.minute).map(lambda value: math.cos(2 * math.pi * value / 1440))
+    grouped = data.groupby("station_id", observed=True)["demand"]
+    data["lag_1"] = grouped.shift(1)
+    data["lag_4"] = grouped.shift(4)
+    data["lag_96"] = grouped.shift(96)
+    data["rolling_12"] = grouped.transform(lambda values: values.shift(1).rolling(12).mean())
+    data["rolling_96"] = grouped.transform(lambda values: values.shift(1).rolling(96).mean())
+    return data.dropna()
+
+
+def future_features(history: pd.DataFrame, targets: list[dict]) -> pd.DataFrame:
+    rows = []
+    for target in targets:
+        station = target["station_id"]
+        timestamp = pd.Timestamp(target["target_at"])
+        local = timestamp.tz_convert("America/Bogota")
+        values = history.loc[history["station_id"] == station].sort_values("observed_at")["demand"].to_numpy()
+        if len(values) < 96:
+            raise RuntimeError(f"Not enough history for station {station}")
+        rows.append({
+            "station_id": station,
+            "target_at": target["target_at"],
+            "hour": local.hour,
+            "day_of_week": local.dayofweek,
+            "hour_sin": math.sin(2 * math.pi * (local.hour * 60 + local.minute) / 1440),
+            "hour_cos": math.cos(2 * math.pi * (local.hour * 60 + local.minute) / 1440),
+            "lag_1": values[-1],
+            "lag_4": values[-4],
+            "lag_96": values[-96],
+            "rolling_12": values[-12:].mean(),
+            "rolling_96": values[-96:].mean(),
+        })
+    return pd.DataFrame(rows)
+
+
+def git_commit() -> str | None:
+    try:
+        value = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
+        return value if len(value) == 40 else None
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+def main() -> None:
+    if not API_KEY:
+        raise SystemExit("PULSO_API_KEY is required")
+
+    headers = {"Authorization": f"Bearer {API_KEY}", "User-Agent": "pulso-transmi-student-pipeline/1.0"}
+    with httpx.Client(base_url=BASE_URL, headers=headers, timeout=60, follow_redirects=True) as client:
+        identity = api_get(client, "/v1/me")
+        cycle = api_get(client, "/v1/forecast-cycles/current")
+        if not cycle:
+            print("No open forecast cycle; nothing to submit.")
+            return
+
+        response = client.get("/v1/downloads/observations.csv")
+        response.raise_for_status()
+        history = pd.read_csv(io.BytesIO(response.content), dtype={"station_id": "string"})
+        history["observed_at"] = pd.to_datetime(history["observed_at"], utc=True)
+        cutoff = pd.Timestamp(cycle["data_cutoff"])
+        history = history[history["observed_at"] <= cutoff].copy()
+
+        training = add_features(history)
+        feature_columns = ["station_id", "hour", "day_of_week", "hour_sin", "hour_cos", "lag_1", "lag_4", "lag_96", "rolling_12", "rolling_96"]
+        categorical = ["station_id"]
+        numeric = [column for column in feature_columns if column not in categorical]
+        model = Pipeline([
+            ("features", ColumnTransformer([
+                ("station", OneHotEncoder(handle_unknown="ignore"), categorical),
+                ("numeric", "passthrough", numeric),
+            ])),
+            ("model", RandomForestRegressor(n_estimators=120, min_samples_leaf=3, random_state=42, n_jobs=-1)),
+        ])
+        model.fit(training[feature_columns], training["demand"])
+
+        future = future_features(history, cycle["targets"])
+        predictions = [{
+            "station_id": row.station_id,
+            "target_at": row.target_at,
+            "value": max(0.0, round(float(value), 3)),
+        } for row, value in zip(future.itertuples(index=False), model.predict(future[feature_columns]), strict=True)]
+
+        run_id = f"gha-{os.getenv('GITHUB_RUN_ID', 'local')}-{os.getenv('GITHUB_RUN_ATTEMPT', '1')}-{cycle['cycle_id']}"
+        model_commit = git_commit()
+        model_trace = {
+            "version": "random-forest-baseline:0.2",
+            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "training_data_end": cycle["data_cutoff"],
+        }
+        if model_commit:
+            model_trace["git_commit"] = model_commit
+        payload = {
+            "schema_version": "1.0",
+            "cycle_id": cycle["cycle_id"],
+            "client_run_id": run_id,
+            "data_cutoff": cycle["data_cutoff"],
+            "model": model_trace,
+            "predictions": predictions,
+        }
+        submission = client.post("/v1/submissions", headers={"Idempotency-Key": run_id}, json=payload)
+        submission.raise_for_status()
+        receipt = submission.json()
+        print(f"Student: {identity.get('display_name', 'unknown')}")
+        print(f"Submission: {receipt['submission_id']}")
+        print(f"Status: {receipt['status']}")
+        print(f"Predictions: {receipt['predictions_received']}/{receipt['expected_predictions']}")
+
+
+if __name__ == "__main__":
+    main()
