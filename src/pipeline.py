@@ -161,6 +161,9 @@ def main() -> None:
         }
         idempotency_key = f"pulso-{cycle['cycle_id']}-xgboost-occupancy-1.0"
         submission = client.post("/v1/submissions", headers={"Idempotency-Key": idempotency_key}, json=payload)
+        if submission.status_code == 409:
+            print(f"Submission already exists for cycle {cycle['cycle_id']}; skipping duplicate.")
+            return
         submission.raise_for_status()
         receipt = submission.json()
         record_observability(run_id, cycle, predictions, receipt, model_trace)
