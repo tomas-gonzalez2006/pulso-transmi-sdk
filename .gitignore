@@ -12,3 +12,4 @@ supabase/.temp/
 *.egg-info/
 dashboard/node_modules/
 dashboard/.next/
+.vercel
