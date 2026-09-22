@@ -89,6 +89,7 @@ def main() -> None:
     (artifacts / "occupancy_model_metadata.json").write_text(json.dumps({"model": best_name, "features": feature_columns, "cutoff": cutoff.isoformat()}, indent=2), encoding="utf-8")
     scores = accuracy_by_station(validation["demand"], validation["prediction"], validation["station_id"])
     overall = 100 * (1 - (validation["demand"] - validation["prediction"]).abs().sum() / validation["demand"].sum())
+    official_accuracy = float(scores.mean())
     baseline = validation["lag_96"].to_numpy()
     weekly = validation["lag_672"].to_numpy()
     seasonal = validation["seasonal_mean"].to_numpy()
@@ -107,6 +108,7 @@ def main() -> None:
         "train_rows": len(train),
         "validation_rows": len(validation),
         "accuracy_wape": round(float(overall), 4),
+        "official_accuracy_station_mean": round(official_accuracy, 4),
         "lag_96_accuracy_wape": round(float(baseline_score), 4),
         "lag_672_accuracy_wape": round(float(weekly_score), 4),
         "seasonal_mean_accuracy_wape": round(float(seasonal_score), 4),
