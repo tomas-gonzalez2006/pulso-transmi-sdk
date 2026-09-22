@@ -60,6 +60,12 @@ export async function GET() {
     identity: me,
     api_health: health,
     leaderboard,
+    connection: {
+      pulso_key_configured: Boolean(process.env.PULSO_API_KEY),
+      supabase_configured: Boolean(supabaseUrl && process.env.SUPABASE_SERVICE_ROLE_KEY),
+      leaderboard_loaded: leaderboard !== null,
+      identity_loaded: me !== null,
+    },
     runs,
     metrics,
     prediction_count: predictions.length,
