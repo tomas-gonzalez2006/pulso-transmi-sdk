@@ -1,0 +1,41 @@
+name: pulso-transmi-operate
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: pulso-transmi-operate
+  cancel-in-progress: false
+
+jobs:
+  operate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    permissions:
+      contents: read
+    env:
+      PULSO_API_URL: https://pulso-transmi.72-60-245-2.sslip.io
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e '.[dev,ml]'
+      - name: Collect released observations
+        run: python scripts/sync_stream.py
+      - name: Check drift
+        id: drift
+        env:
+          DRIFT_THRESHOLD: "0.20"
+        run: python scripts/check_drift.py
+      - name: Retrain and version on drift
+        if: steps.drift.outputs.retrain == 'true'
+        run: python scripts/train_and_version.py
+      - name: Check cycle and submit predictions
+        run: python -m src.pipeline
