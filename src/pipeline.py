@@ -10,10 +10,8 @@ from datetime import datetime, timezone
 
 import httpx
 import pandas as pd
-from sklearn.compose import ColumnTransformer
-from sklearn.ensemble import RandomForestRegressor
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import OneHotEncoder
+from src.pulso_transmi.occupancy import future_features as xgb_future_features
+from src.pulso_transmi.occupancy import train as train_xgb
 
 
 BASE_URL = os.getenv("PULSO_API_URL", "https://pulso-transmi.72-60-245-2.sslip.io").rstrip("/")
@@ -130,30 +128,24 @@ def main() -> None:
         cutoff = pd.Timestamp(cycle["data_cutoff"])
         history = history[history["observed_at"] <= cutoff].copy()
 
-        training = add_features(history)
-        feature_columns = ["station_id", "hour", "day_of_week", "hour_sin", "hour_cos", "lag_1", "lag_4", "lag_96", "rolling_12", "rolling_96"]
-        categorical = ["station_id"]
-        numeric = [column for column in feature_columns if column not in categorical]
-        model = Pipeline([
-            ("features", ColumnTransformer([
-                ("station", OneHotEncoder(handle_unknown="ignore"), categorical),
-                ("numeric", "passthrough", numeric),
-            ])),
-            ("model", RandomForestRegressor(n_estimators=120, min_samples_leaf=3, random_state=42, n_jobs=-1)),
-        ])
-        model.fit(training[feature_columns], training["demand"])
-
-        future = future_features(history, cycle["targets"])
+        context_response = client.get("/v1/downloads/context.csv")
+        context_response.raise_for_status()
+        context = pd.read_csv(io.BytesIO(context_response.content))
+        context["observed_at"] = pd.to_datetime(context["observed_at"], utc=True)
+        context = context[context["observed_at"] <= cutoff].copy()
+        trained = train_xgb(history, context)
+        future = xgb_future_features(history, context, cycle["targets"], trained, cutoff)
+        predictions_array = trained.model.predict(future)
         predictions = [{
             "station_id": row.station_id,
             "target_at": row.target_at,
             "value": max(0.0, round(float(value), 3)),
-        } for row, value in zip(future.itertuples(index=False), model.predict(future[feature_columns]), strict=True)]
+        } for row, value in zip(pd.DataFrame(cycle["targets"]).itertuples(index=False), predictions_array, strict=True)]
 
         run_id = f"gha-{os.getenv('GITHUB_RUN_ID', 'local')}-{os.getenv('GITHUB_RUN_ATTEMPT', '1')}-{cycle['cycle_id']}"
         model_commit = git_commit()
         model_trace = {
-            "version": "random-forest-baseline:0.2",
+            "version": "xgboost-occupancy:1.0",
             "trained_at": datetime.now(timezone.utc).isoformat(),
             "training_data_end": cycle["data_cutoff"],
         }
