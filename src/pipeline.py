@@ -18,6 +18,8 @@ from sklearn.preprocessing import OneHotEncoder
 
 BASE_URL = os.getenv("PULSO_API_URL", "https://pulso-transmi.72-60-245-2.sslip.io").rstrip("/")
 API_KEY = os.getenv("PULSO_API_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
 
 
 def api_get(client: httpx.Client, path: str) -> dict:
@@ -75,6 +77,38 @@ def git_commit() -> str | None:
         return value if len(value) == 40 else None
     except (OSError, subprocess.CalledProcessError):
         return None
+
+
+def record_observability(run_id: str, cycle: dict, predictions: list[dict], receipt: dict, model_trace: dict) -> None:
+    """Persist the accepted batch for the dashboard; never raises on telemetry failure."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        print("Observability skipped: Supabase service credentials are not configured.")
+        return
+    headers = {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal",
+    }
+    try:
+        with httpx.Client(timeout=30) as db:
+            db.post(f"{SUPABASE_URL}/rest/v1/pipeline_runs", headers=headers, json={
+                "run_id": run_id, "run_type": "inference", "status": "succeeded",
+                "finished_at": datetime.now(timezone.utc).isoformat(), "cycle_id": cycle["cycle_id"],
+                "model_version": model_trace["version"], "git_commit": model_trace.get("git_commit"),
+                "records_processed": len(predictions), "metadata": {"submission_id": receipt.get("submission_id")},
+            }).raise_for_status()
+            rows = []
+            for target, prediction in zip(cycle["targets"], predictions, strict=True):
+                rows.append({
+                    "cycle_id": cycle["cycle_id"], "submission_id": receipt.get("submission_id"),
+                    "station_id": prediction["station_id"], "target_at": prediction["target_at"],
+                    "horizon_minutes": target.get("horizon_minutes"), "predicted_value": prediction["value"],
+                    "model_version": model_trace["version"],
+                })
+            db.post(f"{SUPABASE_URL}/rest/v1/prediction_records", headers=headers, json=rows).raise_for_status()
+    except httpx.HTTPError as error:
+        print(f"Observability warning: {error.__class__.__name__}")
 
 
 def main() -> None:
@@ -136,6 +170,7 @@ def main() -> None:
         submission = client.post("/v1/submissions", headers={"Idempotency-Key": run_id}, json=payload)
         submission.raise_for_status()
         receipt = submission.json()
+        record_observability(run_id, cycle, predictions, receipt, model_trace)
         print(f"Student: {identity.get('display_name', 'unknown')}")
         print(f"Submission: {receipt['submission_id']}")
         print(f"Status: {receipt['status']}")
