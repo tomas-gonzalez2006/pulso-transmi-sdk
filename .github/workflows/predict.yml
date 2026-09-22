@@ -27,7 +27,7 @@ jobs:
         run: pytest -q
       - name: Sync, infer and submit
         env:
-          PULSO_API_URL: ${{ vars.PULSO_API_URL }}
+          PULSO_API_URL: https://pulso-transmi.72-60-245-2.sslip.io
           PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
