@@ -159,7 +159,8 @@ def main() -> None:
             "model": model_trace,
             "predictions": predictions,
         }
-        submission = client.post("/v1/submissions", headers={"Idempotency-Key": run_id}, json=payload)
+        idempotency_key = f"pulso-{cycle['cycle_id']}-xgboost-occupancy-1.0"
+        submission = client.post("/v1/submissions", headers={"Idempotency-Key": idempotency_key}, json=payload)
         submission.raise_for_status()
         receipt = submission.json()
         record_observability(run_id, cycle, predictions, receipt, model_trace)
