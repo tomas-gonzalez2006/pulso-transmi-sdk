@@ -163,6 +163,15 @@ def main() -> None:
         submission = client.post("/v1/submissions", headers={"Idempotency-Key": idempotency_key}, json=payload)
         if submission.status_code == 409:
             print(f"Submission already exists for cycle {cycle['cycle_id']}; skipping duplicate.")
+            # Pulso has already accepted this idempotency key. Persist the
+            # locally generated batch as well so the dashboard can display it.
+            record_observability(
+                run_id,
+                cycle,
+                predictions,
+                {"status": "already_exists"},
+                model_trace,
+            )
             return
         submission.raise_for_status()
         receipt = submission.json()
