@@ -36,6 +36,8 @@ def main() -> None:
             demands = [{"station_id": row["station_id"], "observed_at": row["observed_at"], "demand": row["demand"]} for row in rows]
             db.post(f"{URL}/rest/v1/demand_observations", headers=h, json=demands).raise_for_status()
         next_cursor = payload.get("next_cursor")
+        if not next_cursor and rows:
+            next_cursor = max(row["observed_at"] for row in rows)
         if next_cursor:
             db.post(f"{URL}/rest/v1/api_cursors", headers=h, json={"source_name": SOURCE, "cursor_value": next_cursor, "updated_at": datetime.now(timezone.utc).isoformat()}).raise_for_status()
         observed = [row.get("observed_at") for row in rows if row.get("observed_at")]

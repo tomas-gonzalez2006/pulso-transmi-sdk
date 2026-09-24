@@ -31,6 +31,8 @@ jobs:
         run: python scripts/reconcile_official_dataset.py
       - name: Collect released observations
         run: python scripts/sync_stream.py
+      - name: Evaluate released predictions
+        run: python scripts/evaluate_predictions.py
       - name: Check drift
         id: drift
         env:
