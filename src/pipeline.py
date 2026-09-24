@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 
 import httpx
 import pandas as pd
-from src.pulso_transmi.occupancy import future_features as xgb_future_features
+from src.pulso_transmi.occupancy import recursive_predict
 from src.pulso_transmi.occupancy import train as train_xgb
 
 
@@ -177,8 +177,7 @@ def main() -> None:
         context["observed_at"] = pd.to_datetime(context["observed_at"], utc=True)
         context = context[context["observed_at"] <= cutoff].copy()
         trained = train_xgb(history, context)
-        future = xgb_future_features(history, context, cycle["targets"], trained, cutoff)
-        predictions_array = trained.model.predict(future)
+        predictions_array = recursive_predict(history, context, cycle["targets"], trained, cutoff)
         predictions = [{
             "station_id": row.station_id,
             "target_at": row.target_at,
@@ -188,7 +187,7 @@ def main() -> None:
         run_id = f"gha-{os.getenv('GITHUB_RUN_ID', 'local')}-{os.getenv('GITHUB_RUN_ATTEMPT', '1')}-{cycle['cycle_id']}"
         model_commit = git_commit()
         model_trace = {
-            "version": "xgboost-occupancy:1.0",
+            "version": "xgboost-occupancy-recursive:2.0",
             "trained_at": datetime.now(timezone.utc).isoformat(),
             "training_data_end": cycle["data_cutoff"],
         }

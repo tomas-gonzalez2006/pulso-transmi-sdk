@@ -92,3 +92,22 @@ def future_features(history: pd.DataFrame, context: pd.DataFrame, targets: list[
         row["seasonal_mean"] = trained.seasonal_means.get((station, slot), trained.fallback_seasonal)
         rows.append(row)
     return pd.DataFrame(rows, columns=FEATURES)
+
+
+def recursive_predict(history: pd.DataFrame, context: pd.DataFrame, targets: list[dict], trained: OccupancyModel, cutoff: pd.Timestamp) -> list[float]:
+    """Forecast multiple horizons without using unavailable future observations."""
+    working = history[["station_id", "observed_at", "demand"]].copy()
+    working["station_id"] = working["station_id"].astype(str)
+    working["observed_at"] = pd.to_datetime(working["observed_at"], utc=True)
+    ordered = sorted(enumerate(targets), key=lambda item: (pd.Timestamp(item[1]["target_at"]), str(item[1]["station_id"])))
+    predictions: dict[int, float] = {}
+    for index, target in ordered:
+        features = future_features(working, context, [target], trained, cutoff)
+        value = max(0.0, float(trained.model.predict(features)[0]))
+        predictions[index] = round(value, 3)
+        working = pd.concat([working, pd.DataFrame([{
+            "station_id": str(target["station_id"]),
+            "observed_at": pd.Timestamp(target["target_at"]),
+            "demand": value,
+        }])], ignore_index=True)
+    return [predictions[index] for index in range(len(targets))]
