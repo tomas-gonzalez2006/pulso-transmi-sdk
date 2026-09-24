@@ -109,6 +109,36 @@ def record_observability(run_id: str, cycle: dict, predictions: list[dict], rece
         print(f"Observability warning: {error.__class__.__name__}")
 
 
+def load_history_from_supabase(cutoff: pd.Timestamp) -> pd.DataFrame | None:
+    """Load the newly collected observations used by the live model."""
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return None
+    headers = {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+    }
+    response = httpx.get(
+        f"{SUPABASE_URL}/rest/v1/demand_observations",
+        headers=headers,
+        params={
+            "select": "station_id,observed_at,demand",
+            "observed_at": f"lte.{cutoff.isoformat()}",
+            "order": "observed_at.asc",
+            "limit": "100000",
+        },
+        timeout=60,
+    )
+    response.raise_for_status()
+    rows = response.json()
+    if not rows:
+        return None
+    history = pd.DataFrame(rows, dtype={"station_id": "string"})
+    history["observed_at"] = pd.to_datetime(history["observed_at"], utc=True)
+    history["demand"] = pd.to_numeric(history["demand"], errors="coerce")
+    history = history.dropna(subset=["station_id", "observed_at", "demand"])
+    return history if not history.empty else None
+
+
 def main() -> None:
     if not API_KEY:
         raise SystemExit("PULSO_API_KEY is required")
@@ -121,12 +151,17 @@ def main() -> None:
             print("No open forecast cycle; nothing to submit.")
             return
 
-        response = client.get("/v1/downloads/observations.csv")
-        response.raise_for_status()
-        history = pd.read_csv(io.BytesIO(response.content), dtype={"station_id": "string"})
-        history["observed_at"] = pd.to_datetime(history["observed_at"], utc=True)
         cutoff = pd.Timestamp(cycle["data_cutoff"])
-        history = history[history["observed_at"] <= cutoff].copy()
+        history = load_history_from_supabase(cutoff)
+        if history is None:
+            response = client.get("/v1/downloads/observations.csv")
+            response.raise_for_status()
+            history = pd.read_csv(io.BytesIO(response.content), dtype={"station_id": "string"})
+            history["observed_at"] = pd.to_datetime(history["observed_at"], utc=True)
+            history = history[history["observed_at"] <= cutoff].copy()
+            print("Live history unavailable; using API fallback observations.csv")
+        else:
+            print(f"Using Supabase live history: {len(history)} observations")
 
         context_response = client.get("/v1/downloads/context.csv")
         context_response.raise_for_status()
