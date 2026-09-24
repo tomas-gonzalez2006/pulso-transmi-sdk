@@ -38,6 +38,9 @@ def main() -> None:
         next_cursor = payload.get("next_cursor")
         if next_cursor:
             db.post(f"{URL}/rest/v1/api_cursors", headers=h, json={"source_name": SOURCE, "cursor_value": next_cursor, "updated_at": datetime.now(timezone.utc).isoformat()}).raise_for_status()
-        print(f"stream_rows={len(rows)} cursor_advanced={bool(next_cursor)}")
+        observed = [row.get("observed_at") for row in rows if row.get("observed_at")]
+        latest = max(observed) if observed else "none"
+        earliest = min(observed) if observed else "none"
+        print(f"stream_rows={len(rows)} earliest_observed_at={earliest} latest_observed_at={latest} cursor_advanced={bool(next_cursor)}")
 
 if __name__ == "__main__": main()
