@@ -25,6 +25,10 @@ def main() -> None:
         params = {"limit": "5000"};
         if cursor: params["cursor"] = cursor
         response = httpx.get(f"{API}/v1/stream/observations", params=params, timeout=60)
+        if response.status_code == 400 and cursor:
+            # The API cursor is opaque; never synthesize one from a timestamp.
+            response = httpx.get(f"{API}/v1/stream/observations", params={"limit": "5000"}, timeout=60)
+            cursor = None
         response.raise_for_status(); payload = response.json(); rows = payload.get("data", [])
         if rows:
             timestamps = sorted({row["observed_at"] for row in rows})
@@ -36,8 +40,6 @@ def main() -> None:
             demands = [{"station_id": row["station_id"], "observed_at": row["observed_at"], "demand": row["demand"]} for row in rows]
             db.post(f"{URL}/rest/v1/demand_observations", headers=h, json=demands).raise_for_status()
         next_cursor = payload.get("next_cursor")
-        if not next_cursor and rows:
-            next_cursor = max(row["observed_at"] for row in rows)
         if next_cursor:
             db.post(f"{URL}/rest/v1/api_cursors", headers=h, json={"source_name": SOURCE, "cursor_value": next_cursor, "updated_at": datetime.now(timezone.utc).isoformat()}).raise_for_status()
         observed = [row.get("observed_at") for row in rows if row.get("observed_at")]
