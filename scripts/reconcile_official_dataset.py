@@ -26,6 +26,11 @@ def chunks(rows: list[dict], size: int = 500):
         yield rows[start : start + size]
 
 
+def ensure_ok(response: httpx.Response) -> None:
+    if response.is_error:
+        raise RuntimeError(f"Supabase {response.status_code}: {response.text[:1000]}")
+
+
 def corridor_id(name: str) -> str:
     value = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
     return re.sub(r"[^a-z0-9]+", "-", value).strip("-")
@@ -48,13 +53,13 @@ def main() -> None:
         corridor_map = {r["corridor"]: corridor_id(r["corridor"]) for r in stations}
         corridors = [{"corridor_id": cid, "corridor_name": name, "active": True} for name, cid in corridor_map.items()]
         response = db.post(f"{SUPABASE_URL}/rest/v1/corridors", headers=db_headers, json=corridors)
-        response.raise_for_status()
+        ensure_ok(response)
         station_rows = [{
             "station_id": r["station_id"], "corridor_id": corridor_map[r["corridor"]], "station_name": r["station_name"],
             "latitude": float(r["latitude"]), "longitude": float(r["longitude"]),
         } for r in stations]
         response = db.post(f"{SUPABASE_URL}/rest/v1/stations", headers=db_headers, json=station_rows)
-        response.raise_for_status()
+        ensure_ok(response)
         timestamps = sorted({r["observed_at"] for r in observations} | {r["observed_at"] for r in context})
         time_rows = []
         for raw in timestamps:
@@ -66,11 +71,11 @@ def main() -> None:
             })
         for group in chunks(time_rows):
             response = db.post(f"{SUPABASE_URL}/rest/v1/time_slots", headers=db_headers, json=group)
-            response.raise_for_status()
+            ensure_ok(response)
         for group in chunks(observations):
             rows = [{"station_id": r["station_id"], "observed_at": r["observed_at"], "demand": float(r["demand"])} for r in group]
             response = db.post(f"{SUPABASE_URL}/rest/v1/demand_observations", headers=db_headers, json=rows)
-            response.raise_for_status()
+            ensure_ok(response)
         for group in chunks(context):
             weather = [{
                 "observed_at": r["observed_at"], "rain_mm": float(r["rain_mm"] or 0),
@@ -79,7 +84,7 @@ def main() -> None:
                 "temperature_forecast": float(r["temperature_forecast"]) if r.get("temperature_forecast") else None,
             } for r in group]
             response = db.post(f"{SUPABASE_URL}/rest/v1/weather_observations", headers=db_headers, json=weather)
-            response.raise_for_status()
+            ensure_ok(response)
     latest = max((r["observed_at"] for r in observations), default=None)
     print(f"official_observations={len(observations)} official_context={len(context)} latest_observed_at={latest}")
 
