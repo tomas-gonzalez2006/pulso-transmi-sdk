@@ -73,7 +73,7 @@ def main() -> None:
             response = db.post(f"{SUPABASE_URL}/rest/v1/time_slots", headers=db_headers, json=group)
             ensure_ok(response)
         for group in chunks(observations):
-            rows = [{"station_id": r["station_id"], "observed_at": r["observed_at"], "demand": float(r["demand"])} for r in group]
+            rows = [{"station_id": r["station_id"], "observed_at": r["observed_at"], "demand": int(float(r["demand"]))} for r in group]
             response = db.post(f"{SUPABASE_URL}/rest/v1/demand_observations", headers=db_headers, json=rows)
             ensure_ok(response)
         for group in chunks(context):
