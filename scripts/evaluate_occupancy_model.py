@@ -73,6 +73,14 @@ def main() -> None:
             n_jobs=-1,
             random_state=42,
         ),
+        "extra_trees": ExtraTreesRegressor(
+            n_estimators=300, min_samples_leaf=2, max_features=0.85,
+            n_jobs=-1, random_state=42,
+        ),
+        "hist_gradient_boosting": HistGradientBoostingRegressor(
+            max_iter=350, learning_rate=0.05, max_leaf_nodes=31,
+            l2_regularization=2.0, random_state=42,
+        ),
     }
     model_scores = {}
     predictions = {}

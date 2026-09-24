@@ -46,7 +46,7 @@ def main() -> None:
     context["observed_at"] = pd.to_datetime(context["observed_at"], utc=True)
     trained = train(observations, context)
     data_version = f"data-{sha256(observations_bytes)[:12]}-{sha256(context_bytes)[:12]}"
-    model_version = f"xgboost-occupancy-{sha256((data_version + json.dumps(FEATURES)).encode())[:12]}"
+    model_version = f"xgboost-occupancy-recursive-{sha256((data_version + json.dumps(FEATURES)).encode())[:12]}"
     artifact = Path("artifacts/models") / f"{model_version}.joblib"
     artifact.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(trained.model, artifact)
