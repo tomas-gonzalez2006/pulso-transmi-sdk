@@ -27,6 +27,8 @@ jobs:
           python-version: "3.12"
           cache: pip
       - run: python -m pip install -e '.[dev,ml]'
+      - name: Reconcile official API dataset into Supabase
+        run: python scripts/reconcile_official_dataset.py
       - name: Collect released observations
         run: python scripts/sync_stream.py
       - name: Check drift
