@@ -45,11 +45,12 @@ def main() -> None:
         observations = csv_download(api, "observations")
         context = csv_download(api, "context")
     with httpx.Client(timeout=120) as db:
-        corridors = [{"corridor_id": corridor_id(r["corridor"]), "corridor_name": r["corridor"], "active": True} for r in stations]
+        corridor_map = {r["corridor"]: corridor_id(r["corridor"]) for r in stations}
+        corridors = [{"corridor_id": cid, "corridor_name": name, "active": True} for name, cid in corridor_map.items()]
         response = db.post(f"{SUPABASE_URL}/rest/v1/corridors", headers=db_headers, json=corridors)
         response.raise_for_status()
         station_rows = [{
-            "station_id": r["station_id"], "corridor_id": corridor_id(r["corridor"]), "station_name": r["station_name"],
+            "station_id": r["station_id"], "corridor_id": corridor_map[r["corridor"]], "station_name": r["station_name"],
             "latitude": float(r["latitude"]), "longitude": float(r["longitude"]),
         } for r in stations]
         response = db.post(f"{SUPABASE_URL}/rest/v1/stations", headers=db_headers, json=station_rows)
