@@ -153,13 +153,20 @@ def main() -> None:
 
         cutoff = pd.Timestamp(cycle["data_cutoff"])
         history = load_history_from_supabase(cutoff)
-        if history is None:
+        history_is_complete = history is not None and history["observed_at"].max() >= cutoff
+        if not history_is_complete:
+            if history is not None:
+                print(
+                    "Supabase history is behind the cycle cutoff "
+                    f"({history['observed_at'].max().isoformat()} < {cutoff.isoformat()}); "
+                    "refreshing from the official observations source."
+                )
             response = client.get("/v1/downloads/observations.csv")
             response.raise_for_status()
             history = pd.read_csv(io.BytesIO(response.content), dtype={"station_id": "string"})
             history["observed_at"] = pd.to_datetime(history["observed_at"], utc=True)
             history = history[history["observed_at"] <= cutoff].copy()
-            print("Live history unavailable; using API fallback observations.csv")
+            print(f"Using official observations through {history['observed_at'].max().isoformat()}")
         else:
             print(f"Using Supabase live history: {len(history)} observations")
 
