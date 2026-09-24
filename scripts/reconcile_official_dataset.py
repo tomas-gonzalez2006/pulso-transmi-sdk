@@ -4,6 +4,8 @@ from __future__ import annotations
 import csv
 import io
 import os
+import re
+import unicodedata
 from datetime import datetime
 
 import httpx
@@ -24,6 +26,11 @@ def chunks(rows: list[dict], size: int = 500):
         yield rows[start : start + size]
 
 
+def corridor_id(name: str) -> str:
+    value = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "-", value).strip("-")
+
+
 def main() -> None:
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_KEY are required")
@@ -34,9 +41,31 @@ def main() -> None:
         "Prefer": "resolution=merge-duplicates,return=minimal",
     }
     with httpx.Client(timeout=120, headers={"User-Agent": "pulso-transmi-reconciler/1.0"}) as api:
+        stations = csv_download(api, "stations")
         observations = csv_download(api, "observations")
         context = csv_download(api, "context")
     with httpx.Client(timeout=120) as db:
+        corridors = [{"corridor_id": corridor_id(r["corridor"]), "corridor_name": r["corridor"], "active": True} for r in stations]
+        response = db.post(f"{SUPABASE_URL}/rest/v1/corridors", headers=db_headers, json=corridors)
+        response.raise_for_status()
+        station_rows = [{
+            "station_id": r["station_id"], "corridor_id": corridor_id(r["corridor"]), "station_name": r["station_name"],
+            "latitude": float(r["latitude"]), "longitude": float(r["longitude"]),
+        } for r in stations]
+        response = db.post(f"{SUPABASE_URL}/rest/v1/stations", headers=db_headers, json=station_rows)
+        response.raise_for_status()
+        timestamps = sorted({r["observed_at"] for r in observations} | {r["observed_at"] for r in context})
+        time_rows = []
+        for raw in timestamps:
+            dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            time_rows.append({
+                "observed_at": raw, "local_date": dt.date().isoformat(),
+                "local_hour": dt.hour, "local_minute": dt.minute,
+                "weekday": dt.isoweekday(), "is_weekend": dt.weekday() >= 5,
+            })
+        for group in chunks(time_rows):
+            response = db.post(f"{SUPABASE_URL}/rest/v1/time_slots", headers=db_headers, json=group)
+            response.raise_for_status()
         for group in chunks(observations):
             rows = [{"station_id": r["station_id"], "observed_at": r["observed_at"], "demand": float(r["demand"])} for r in group]
             response = db.post(f"{SUPABASE_URL}/rest/v1/demand_observations", headers=db_headers, json=rows)
