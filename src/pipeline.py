@@ -132,7 +132,8 @@ def load_history_from_supabase(cutoff: pd.Timestamp) -> pd.DataFrame | None:
     rows = response.json()
     if not rows:
         return None
-    history = pd.DataFrame(rows, dtype={"station_id": "string"})
+    history = pd.DataFrame(rows)
+    history["station_id"] = history["station_id"].astype("string")
     history["observed_at"] = pd.to_datetime(history["observed_at"], utc=True)
     history["demand"] = pd.to_numeric(history["demand"], errors="coerce")
     history = history.dropna(subset=["station_id", "observed_at", "demand"])
