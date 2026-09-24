@@ -1,0 +1,16 @@
+name: evaluate-model-candidate
+
+on:
+  workflow_dispatch:
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -e '.[ml]'
+      - run: python scripts/evaluate_occupancy_model.py
