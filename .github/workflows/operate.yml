@@ -28,21 +28,27 @@ jobs:
           cache: pip
       - run: python -m pip install -e '.[dev,ml]'
       - name: Reconcile official API dataset into Supabase
+        continue-on-error: true
         run: python scripts/reconcile_official_dataset.py
       - name: Collect released observations
+        continue-on-error: true
         run: python scripts/sync_stream.py
       - name: Evaluate released predictions
+        continue-on-error: true
         run: python scripts/evaluate_predictions.py
       - name: Check drift
         id: drift
+        continue-on-error: true
         env:
           DRIFT_THRESHOLD: "0.20"
         run: python scripts/check_drift.py
       - name: Retrain and version on drift
         if: steps.drift.outputs.retrain == 'true'
+        continue-on-error: true
         run: python scripts/train_and_version.py
       - name: Check cycle and submit predictions
         run: python -m src.pipeline
       - name: Report current leaderboard metrics
         if: always()
+        continue-on-error: true
         run: python scripts/report_leaderboard.py
