@@ -10,17 +10,15 @@ from datetime import datetime, timezone
 
 import httpx
 import pandas as pd
-from src.pulso_transmi.occupancy import recursive_predict
-from src.pulso_transmi.occupancy import train as train_xgb
+from pulso_transmi.operations import history_covers_cycle, validate_prediction_batch
+from pulso_transmi.occupancy import recursive_predict
+from pulso_transmi.occupancy import train as train_xgb
 
 
 BASE_URL = os.getenv("PULSO_API_URL", "https://pulso-transmi.72-60-245-2.sslip.io").rstrip("/")
 API_KEY = os.getenv("PULSO_API_KEY")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
-MIN_HISTORY_DAYS = 28
-
-
 def api_get(client: httpx.Client, path: str) -> dict:
     response = client.get(path)
     if response.status_code == 404 and path == "/v1/forecast-cycles/current":
@@ -139,35 +137,6 @@ def load_history_from_supabase(cutoff: pd.Timestamp) -> pd.DataFrame | None:
     history["demand"] = pd.to_numeric(history["demand"], errors="coerce")
     history = history.dropna(subset=["station_id", "observed_at", "demand"])
     return history if not history.empty else None
-
-
-def history_covers_cycle(history: pd.DataFrame | None, cutoff: pd.Timestamp, station_ids: set[str]) -> bool:
-    """Require a dense recent window before trusting the cache for inference."""
-    if history is None or history.empty or not station_ids:
-        return False
-    cutoff = pd.Timestamp(cutoff).floor("15min")
-    # The model uses weekly and 7-day lags; a cache containing only the latest
-    # week can look current while still destroying the training distribution.
-    window_start = cutoff - pd.Timedelta(days=MIN_HISTORY_DAYS)
-    expected = pd.date_range(window_start, cutoff, freq="15min", tz="UTC")
-    recent = history[history["observed_at"].between(window_start, cutoff)]
-    for station in station_ids:
-        timestamps = pd.DatetimeIndex(recent.loc[recent["station_id"].astype(str) == station, "observed_at"].unique())
-        coverage = timestamps.intersection(expected).size / len(expected)
-        if coverage < 0.98 or cutoff not in timestamps:
-            return False
-    return True
-
-
-def validate_prediction_batch(targets: list[dict], values: list[float]) -> None:
-    """Fail closed instead of submitting a misaligned or invalid batch."""
-    if len(targets) != len(values) or not targets:
-        raise RuntimeError(f"Prediction count mismatch: {len(values)} for {len(targets)} targets")
-    keys = [(str(target["station_id"]), pd.Timestamp(target["target_at"])) for target in targets]
-    if len(set(keys)) != len(keys):
-        raise RuntimeError("Forecast cycle contains duplicate station/timestamp targets")
-    if not all(math.isfinite(float(value)) and float(value) >= 0 for value in values):
-        raise RuntimeError("Model produced a non-finite or negative prediction")
 
 
 def main() -> None:

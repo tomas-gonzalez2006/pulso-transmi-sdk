@@ -2,7 +2,7 @@ import pandas as pd
 
 import pytest
 
-from src.pipeline import history_covers_cycle, validate_prediction_batch
+from pulso_transmi.operations import history_covers_cycle, validate_prediction_batch
 
 
 def test_incomplete_cached_history_is_rejected() -> None:
