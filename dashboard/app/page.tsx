@@ -11,6 +11,7 @@ type Dashboard = {
   api_health?: { status?: string } | null;
   connection: { pulso_key_configured: boolean; supabase_configured: boolean };
   leaderboard?: { data?: LeaderboardEntry[] } | null;
+  leaderboard_me?: LeaderboardEntry | null;
   leaderboard_history: LeaderboardPoint[];
   accuracy: number | null;
   coverage: number | null;
@@ -52,17 +53,31 @@ export default function Home() {
     </section>
     {(!data.connection.pulso_key_configured || !data.connection.supabase_configured) && <div className="alert">Conexión incompleta: configura las variables privadas de Production en Vercel.</div>}
     <section className="grid"><Panel title="Drift de demanda" caption="Media reciente frente a la ventana anterior."><div className="bars"><div><span>Anterior</span><i style={{ height: `${Math.min(100, (data.drift_detail.baseline_mean ?? 0) / Math.max(data.drift_detail.baseline_mean ?? 1, data.drift_detail.recent_mean ?? 1) * 100)}%` }} /><b>{number(data.drift_detail.baseline_mean, 0)}</b></div><div><span>Últimos 7 días</span><i className="accent" style={{ height: `${Math.min(100, (data.drift_detail.recent_mean ?? 0) / Math.max(data.drift_detail.baseline_mean ?? 1, data.drift_detail.recent_mean ?? 1) * 100)}%` }} /><b>{number(data.drift_detail.recent_mean, 0)}</b></div></div><p className="muted">{data.drift_detail.recent_count} recientes · {data.drift_detail.baseline_count} de referencia</p></Panel><Panel title="Accuracy por estación" caption="Calculada con WAPE evaluado."><div className="table">{stations.length ? stations.map((row) => <div className="row" key={row.station}><span>{row.station}</span><span className={row.accuracy !== null && row.accuracy < 88 ? "warn" : "goodText"}>{percent(row.accuracy)}</span></div>) : <p className="muted">Todavía no hay predicciones evaluadas.</p>}</div></Panel></section>
-    <section className="grid"><Panel title="Rendimiento del leaderboard" caption="Evolución de accuracy acumulada · compañeros en gris, tú resaltado."><LeaderboardChart history={data.leaderboard_history} identity={data.identity?.display_name} /></Panel><Panel title="Salud del pipeline" caption="Últimas ejecuciones persistidas en Supabase."><div className="table">{data.runs.length ? data.runs.slice(0, 8).map((run, i) => <div className="row" key={String(run.run_id ?? i)}><span>{String(run.run_type ?? "run")}<small>{run.started_at ? new Date(String(run.started_at)).toLocaleString("es-CO") : ""}</small></span><span className={run.status === "succeeded" ? "goodText" : run.status === "failed" ? "warn" : ""}>{String(run.status ?? "—")}</span></div>) : <p className="muted">Aún no hay ejecuciones registradas.</p>}</div></Panel></section>
+    <section className="grid"><Panel title="Rendimiento del leaderboard" caption="Accuracy acumulada · tu posición siempre visible."><Leaderboard entries={data.leaderboard?.data ?? []} identity={data.identity?.display_name} mine={data.leaderboard_me} /></Panel><Panel title="Resumen de desempeño" caption="Indicadores disponibles de la API oficial."><PerformanceSummary data={data} /></Panel></section>
     <footer>Actualizado {new Date(data.generated_at).toLocaleString("es-CO")} · Las credenciales nunca llegan al navegador.</footer>
   </main></>;
 }
 
 function Metric({ label, value, note }: { label: string; value: string; note: string }) { return <article className="metric"><span>{label}</span><strong>{value}</strong><small>{note}</small></article>; }
 function Panel({ title, caption, children }: { title: string; caption: string; children: React.ReactNode }) { return <article className="panel"><h2>{title}</h2><p className="caption">{caption}</p>{children}</article>; }
-function Leaderboard({ entries, identity }: { entries: LeaderboardEntry[]; identity?: string }) {
-  if (!entries.length) return <p className="muted">No hay resultados publicados todavía.</p>;
-  const top = entries.slice(0, 10); const max = Math.max(...top.map((entry) => entry.accuracy), 1);
-  return <div className="leaderboard">{top.map((entry) => { const mine = entry.display_name === identity; return <div className={`leader-row ${mine ? "mine" : ""}`} key={`${entry.rank}-${entry.display_name}`}><div className="leader-label"><span className="rank">#{entry.rank}</span><span className="leader-name">{entry.display_name}{mine && <em> tú</em>}<small>Cobertura {percent(entry.coverage * 100)}</small></span><strong>{percent(entry.accuracy)}</strong></div><div className="track"><i style={{ width: `${Math.max(2, entry.accuracy / max * 100)}%` }} /></div></div>; })}</div>;
+function Leaderboard({ entries, identity, mine }: { entries: LeaderboardEntry[]; identity?: string; mine?: LeaderboardEntry | null }) {
+  if (!entries.length && !mine) return <p className="muted">No hay resultados publicados todavía.</p>;
+  const top = entries.slice(0, 10);
+  const visible = mine && !top.some((entry) => entry.display_name === mine.display_name) ? [...top, mine] : top;
+  const max = Math.max(...visible.map((entry) => entry.accuracy), 1);
+  return <div className="leaderboard">{visible.map((entry) => { const isMine = entry.display_name === identity; return <div className={`leader-row ${isMine ? "mine" : ""}`} key={`${entry.rank}-${entry.display_name}`}><div className="leader-label"><span className="rank">#{entry.rank}</span><span className="leader-name">{entry.display_name}{isMine && <em> tú</em>}<small>Cobertura {percent(entry.coverage * 100)}</small></span><strong>{percent(entry.accuracy)}</strong></div><div className="track"><i style={{ width: `${Math.max(2, entry.accuracy / max * 100)}%` }} /></div></div>; })}</div>;
+}
+
+function PerformanceSummary({ data }: { data: Dashboard }) {
+  const rank = data.leaderboard_me?.rank;
+  const drift = data.leaderboard_drift;
+  return <div className="table">
+    <div className="row"><span>Posición actual</span><strong>{rank ? `#${rank}` : "—"}</strong></div>
+    <div className="row"><span>Accuracy acumulada</span><strong>{percent(data.accuracy)}</strong></div>
+    <div className="row"><span>Cobertura total</span><strong>{percent(data.coverage)}</strong></div>
+    <div className="row"><span>Cambio vs. periodo anterior</span><strong className={drift !== null && drift < 0 ? "warn" : "goodText"}>{drift === null ? "—" : `${drift >= 0 ? "+" : ""}${drift.toFixed(1)} pp`}</strong></div>
+    <p className="muted">{drift === null ? "Esperando el siguiente snapshot del leaderboard." : drift >= 0 ? "El desempeño está mejorando." : "El desempeño está disminuyendo; conviene revisar el próximo ciclo."}</p>
+  </div>;
 }
 
 function LeaderboardChart({ history, identity }: { history: LeaderboardPoint[]; identity?: string }) {
