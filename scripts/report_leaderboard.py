@@ -1,8 +1,10 @@
-"""Collect the authenticated student's cumulative leaderboard metrics."""
+"""Collect cumulative leaderboard snapshots for every student."""
 from __future__ import annotations
+
 import json
 import os
 from typing import Any
+
 import httpx
 
 LEADERBOARD_MODEL = "pulso-leaderboard:cumulative"
@@ -22,7 +24,6 @@ def build_metric(student: str, row: dict[str, Any]) -> dict[str, Any]:
         accuracy *= 100
     wape = row.get("wape")
     if wape is None:
-        # The leaderboard exposes accuracy; accuracy = (1 - WAPE) * 100.
         wape = max(0.0, 1.0 - accuracy / 100.0)
     else:
         wape = _fraction(wape)
@@ -43,14 +44,13 @@ def build_metric(student: str, row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _leaderboard_row(payload: Any, name: str) -> dict[str, Any] | None:
+def _leaderboard_entries(payload: Any) -> list[dict[str, Any]]:
     entries = payload.get("data", []) if isinstance(payload, dict) else payload
-    if not isinstance(entries, list):
-        return None
-    return next(
-        (row for row in entries if isinstance(row, dict) and row.get("display_name") == name),
-        None,
-    )
+    return [entry for entry in entries if isinstance(entry, dict)] if isinstance(entries, list) else []
+
+
+def _student(metric: dict[str, Any]) -> str | None:
+    return (metric.get("metadata") or {}).get("student")
 
 
 def _changed(previous: dict[str, Any] | None, metric: dict[str, Any]) -> bool:
@@ -70,31 +70,25 @@ def _changed(previous: dict[str, Any] | None, metric: dict[str, Any]) -> bool:
 
 def main() -> None:
     api_key = os.environ["PULSO_API_KEY"]
-    api_base = os.getenv(
-        "PULSO_API_URL", "https://pulso-transmi.72-60-245-2.sslip.io"
-    ).rstrip("/")
+    api_base = os.getenv("PULSO_API_URL", "https://pulso-transmi.72-60-245-2.sslip.io").rstrip("/")
     headers = {"Authorization": f"Bearer {api_key}", "Accept": "application/json"}
     with httpx.Client(timeout=30, headers=headers) as client:
         identity_response = client.get(f"{api_base}/v1/me")
         identity_response.raise_for_status()
-        name = identity_response.json().get("display_name")
+        identity = identity_response.json()
+        name = identity.get("display_name")
         if not name:
             raise RuntimeError("The public API did not return display_name")
-        leaderboard_response = client.get(
-            f"{api_base}/v1/leaderboard", params={"window": "cumulative"}
-        )
+        leaderboard_response = client.get(f"{api_base}/v1/leaderboard", params={"window": "cumulative"})
         leaderboard_response.raise_for_status()
-        row = _leaderboard_row(leaderboard_response.json(), name)
-        if row is None:
-            print(json.dumps({"student": name, "status": "not_in_leaderboard"}))
-            return
-        metric = build_metric(name, row)
+        entries = _leaderboard_entries(leaderboard_response.json())
 
     supabase_url = os.getenv("SUPABASE_URL")
     supabase_key = os.getenv("SUPABASE_SERVICE_KEY")
     if not supabase_url or not supabase_key:
-        print(json.dumps({"student": name, "metric": metric, "status": "not_persisted"}))
+        print(json.dumps({"student": name, "students": len(entries), "status": "not_persisted"}))
         return
+
     db_headers = {
         "apikey": supabase_key,
         "Authorization": f"Bearer {supabase_key}",
@@ -103,34 +97,42 @@ def main() -> None:
     }
     db_base = supabase_url.rstrip("/") + "/rest/v1/model_metrics"
     with httpx.Client(timeout=30, headers=db_headers) as db:
-        latest_response = db.get(
+        response = db.get(
             db_base,
             params={
                 "select": "accuracy,wape,coverage,metadata,drift_score,measured_at",
                 "model_version": f"eq.{LEADERBOARD_MODEL}",
                 "metric_scope": "eq.cumulative",
                 "order": "measured_at.desc",
-                "limit": "1",
+                "limit": "5000",
             },
         )
-        latest_response.raise_for_status()
-        latest = latest_response.json()
-        previous = latest[0] if latest else None
-        if not _changed(previous, metric):
-            print(json.dumps({"student": name, "status": "unchanged", "metric": metric}))
-            return
-        metric["drift_score"] = (
-            metric["accuracy"] - float(previous["accuracy"])
-            if previous and previous.get("accuracy") is not None
-            else None
-        )
-        insert_response = db.post(
-            db_base,
-            headers={**db_headers, "Prefer": "return=minimal"},
-            json=metric,
-        )
-        insert_response.raise_for_status()
-    print(json.dumps({"student": name, "status": "inserted", "metric": metric}))
+        response.raise_for_status()
+        latest_by_student: dict[str, dict[str, Any]] = {}
+        for previous in response.json():
+            student = _student(previous)
+            if student and student not in latest_by_student:
+                latest_by_student[student] = previous
+
+        inserted = 0
+        for row in entries:
+            student = str(row.get("display_name", "")).strip()
+            if not student or "accuracy" not in row:
+                continue
+            metric = build_metric(student, row)
+            previous = latest_by_student.get(student)
+            if not _changed(previous, metric):
+                continue
+            metric["drift_score"] = (
+                metric["accuracy"] - float(previous["accuracy"])
+                if previous and previous.get("accuracy") is not None
+                else None
+            )
+            insert = db.post(db_base, headers={**db_headers, "Prefer": "return=minimal"}, json=metric)
+            insert.raise_for_status()
+            inserted += 1
+
+    print(json.dumps({"student": name, "students": len(entries), "inserted": inserted, "status": "ok"}))
 
 
 if __name__ == "__main__":

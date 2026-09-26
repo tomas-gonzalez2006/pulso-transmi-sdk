@@ -4,12 +4,14 @@ import { useEffect, useState } from "react";
 import Sidebar from "./components/Sidebar";
 
 type LeaderboardEntry = { display_name: string; accuracy: number; coverage: number; rank: number };
+type LeaderboardPoint = { student: string; measured_at: string; accuracy: number };
 type Dashboard = {
   generated_at: string;
   identity?: { display_name?: string } | null;
   api_health?: { status?: string } | null;
   connection: { pulso_key_configured: boolean; supabase_configured: boolean };
   leaderboard?: { data?: LeaderboardEntry[] } | null;
+  leaderboard_history: LeaderboardPoint[];
   accuracy: number | null;
   coverage: number | null;
   leaderboard_drift: number | null;
@@ -50,7 +52,7 @@ export default function Home() {
     </section>
     {(!data.connection.pulso_key_configured || !data.connection.supabase_configured) && <div className="alert">Conexión incompleta: configura las variables privadas de Production en Vercel.</div>}
     <section className="grid"><Panel title="Drift de demanda" caption="Media reciente frente a la ventana anterior."><div className="bars"><div><span>Anterior</span><i style={{ height: `${Math.min(100, (data.drift_detail.baseline_mean ?? 0) / Math.max(data.drift_detail.baseline_mean ?? 1, data.drift_detail.recent_mean ?? 1) * 100)}%` }} /><b>{number(data.drift_detail.baseline_mean, 0)}</b></div><div><span>Últimos 7 días</span><i className="accent" style={{ height: `${Math.min(100, (data.drift_detail.recent_mean ?? 0) / Math.max(data.drift_detail.baseline_mean ?? 1, data.drift_detail.recent_mean ?? 1) * 100)}%` }} /><b>{number(data.drift_detail.recent_mean, 0)}</b></div></div><p className="muted">{data.drift_detail.recent_count} recientes · {data.drift_detail.baseline_count} de referencia</p></Panel><Panel title="Accuracy por estación" caption="Calculada con WAPE evaluado."><div className="table">{stations.length ? stations.map((row) => <div className="row" key={row.station}><span>{row.station}</span><span className={row.accuracy !== null && row.accuracy < 88 ? "warn" : "goodText"}>{percent(row.accuracy)}</span></div>) : <p className="muted">Todavía no hay predicciones evaluadas.</p>}</div></Panel></section>
-    <section className="grid"><Panel title="Leaderboard" caption="Accuracy acumulada · API oficial Pulso TransMi."><Leaderboard entries={data.leaderboard?.data ?? []} identity={data.identity?.display_name} /></Panel><Panel title="Salud del pipeline" caption="Últimas ejecuciones persistidas en Supabase."><div className="table">{data.runs.length ? data.runs.slice(0, 8).map((run, i) => <div className="row" key={String(run.run_id ?? i)}><span>{String(run.run_type ?? "run")}<small>{run.started_at ? new Date(String(run.started_at)).toLocaleString("es-CO") : ""}</small></span><span className={run.status === "succeeded" ? "goodText" : run.status === "failed" ? "warn" : ""}>{String(run.status ?? "—")}</span></div>) : <p className="muted">Aún no hay ejecuciones registradas.</p>}</div></Panel></section>
+    <section className="grid"><Panel title="Rendimiento del leaderboard" caption="Evolución de accuracy acumulada · compañeros en gris, tú resaltado."><LeaderboardChart history={data.leaderboard_history} identity={data.identity?.display_name} /></Panel><Panel title="Salud del pipeline" caption="Últimas ejecuciones persistidas en Supabase."><div className="table">{data.runs.length ? data.runs.slice(0, 8).map((run, i) => <div className="row" key={String(run.run_id ?? i)}><span>{String(run.run_type ?? "run")}<small>{run.started_at ? new Date(String(run.started_at)).toLocaleString("es-CO") : ""}</small></span><span className={run.status === "succeeded" ? "goodText" : run.status === "failed" ? "warn" : ""}>{String(run.status ?? "—")}</span></div>) : <p className="muted">Aún no hay ejecuciones registradas.</p>}</div></Panel></section>
     <footer>Actualizado {new Date(data.generated_at).toLocaleString("es-CO")} · Las credenciales nunca llegan al navegador.</footer>
   </main></>;
 }
@@ -61,4 +63,15 @@ function Leaderboard({ entries, identity }: { entries: LeaderboardEntry[]; ident
   if (!entries.length) return <p className="muted">No hay resultados publicados todavía.</p>;
   const top = entries.slice(0, 10); const max = Math.max(...top.map((entry) => entry.accuracy), 1);
   return <div className="leaderboard">{top.map((entry) => { const mine = entry.display_name === identity; return <div className={`leader-row ${mine ? "mine" : ""}`} key={`${entry.rank}-${entry.display_name}`}><div className="leader-label"><span className="rank">#{entry.rank}</span><span className="leader-name">{entry.display_name}{mine && <em> tú</em>}<small>Cobertura {percent(entry.coverage * 100)}</small></span><strong>{percent(entry.accuracy)}</strong></div><div className="track"><i style={{ width: `${Math.max(2, entry.accuracy / max * 100)}%` }} /></div></div>; })}</div>;
+}
+
+function LeaderboardChart({ history, identity }: { history: LeaderboardPoint[]; identity?: string }) {
+  const students = [...new Set(history.map((point) => point.student))];
+  if (!history.length) return <p className="muted">Aún no hay snapshots del leaderboard.</p>;
+  const ordered = [...history].sort((a, b) => Date.parse(a.measured_at) - Date.parse(b.measured_at));
+  const minTime = Date.parse(ordered[0].measured_at); const maxTime = Date.parse(ordered[ordered.length - 1].measured_at) || minTime + 1;
+  const minValue = Math.max(0, Math.floor(Math.min(...history.map((point) => point.accuracy)) - 2));
+  const maxValue = Math.min(100, Math.ceil(Math.max(...history.map((point) => point.accuracy)) + 2));
+  const width = 720; const height = 280; const x = (time: number) => 38 + ((time - minTime) / Math.max(1, maxTime - minTime)) * (width - 58); const y = (value: number) => height - 28 - ((value - minValue) / Math.max(1, maxValue - minValue)) * (height - 48);
+  return <div><svg className="leader-chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Evolución del accuracy del leaderboard">{[minValue, (minValue + maxValue) / 2, maxValue].map((value) => <g key={value}><line x1="38" x2={width - 20} y1={y(value)} y2={y(value)} className="chart-grid" /><text x="0" y={y(value) + 4} className="chart-label">{value.toFixed(0)}%</text></g>)}{students.map((student) => { const points = ordered.filter((point) => point.student === student); const mine = student === identity; return <polyline key={student} points={points.map((point) => `${x(Date.parse(point.measured_at))},${y(point.accuracy)}`).join(" ")} className={mine ? "chart-line mine-line" : "chart-line"} />; })}</svg><div className="chart-legend">{students.map((student) => <span key={student} className={student === identity ? "mine-legend" : ""}><i />{student === identity ? "Tú" : student}</span>)}</div></div>;
 }

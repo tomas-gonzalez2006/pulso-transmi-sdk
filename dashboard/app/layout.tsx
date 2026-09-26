@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "./chart.css";
 
 export const metadata: Metadata = {
   title: "Pulso TransMi · Observabilidad",
