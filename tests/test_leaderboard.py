@@ -1,4 +1,4 @@
-from scripts.report_leaderboard import build_metric
+from pulso_transmi.leaderboard import build_metric
 import pytest
 
 
