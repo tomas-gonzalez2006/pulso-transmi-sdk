@@ -1,0 +1,38 @@
+name: pulso-transmi-retrain-on-low-accuracy
+
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: pulso-transmi-retrain-on-low-accuracy
+  cancel-in-progress: false
+
+jobs:
+  check-and-retrain:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      PULSO_API_URL: https://pulso-transmi.72-60-245-2.sslip.io
+      PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
+      SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+      SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+      ACCURACY_RETRAIN_THRESHOLD: "75"
+      RETRAIN_COOLDOWN_HOURS: "24"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: python -m pip install -e '.[dev,ml]'
+      - name: Check official accuracy threshold
+        id: accuracy
+        run: python scripts/check_accuracy_retrain.py
+      - name: Retrain and register model
+        if: steps.accuracy.outputs.retrain == 'true'
+        run: python scripts/train_and_version.py

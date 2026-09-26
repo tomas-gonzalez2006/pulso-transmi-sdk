@@ -52,7 +52,7 @@ export default function Home() {
       <Metric label="Drift demanda" value={percent(data.drift)} note={data.drift === null ? "Sin ventanas comparables" : "Últimos 7 días vs anteriores"} />
     </section>
     {(!data.connection.pulso_key_configured || !data.connection.supabase_configured) && <div className="alert">Conexión incompleta: configura las variables privadas de Production en Vercel.</div>}
-    <section className="grid"><Panel title="Drift de demanda" caption="Media reciente frente a la ventana anterior."><div className="bars"><div><span>Anterior</span><i style={{ height: `${Math.min(100, (data.drift_detail.baseline_mean ?? 0) / Math.max(data.drift_detail.baseline_mean ?? 1, data.drift_detail.recent_mean ?? 1) * 100)}%` }} /><b>{number(data.drift_detail.baseline_mean, 0)}</b></div><div><span>Últimos 7 días</span><i className="accent" style={{ height: `${Math.min(100, (data.drift_detail.recent_mean ?? 0) / Math.max(data.drift_detail.baseline_mean ?? 1, data.drift_detail.recent_mean ?? 1) * 100)}%` }} /><b>{number(data.drift_detail.recent_mean, 0)}</b></div></div><p className="muted">{data.drift_detail.recent_count} recientes · {data.drift_detail.baseline_count} de referencia</p></Panel><Panel title="Accuracy por estación" caption="Calculada con WAPE evaluado."><div className="table">{stations.length ? stations.map((row) => <div className="row" key={row.station}><span>{row.station}</span><span className={row.accuracy !== null && row.accuracy < 88 ? "warn" : "goodText"}>{percent(row.accuracy)}</span></div>) : <p className="muted">Todavía no hay predicciones evaluadas.</p>}</div></Panel></section>
+    <section className="grid"><Panel title="Drift de demanda" caption="Media reciente frente a la ventana anterior."><div className="bars"><div><span>Anterior</span><i style={{ height: `${Math.min(100, (data.drift_detail.baseline_mean ?? 0) / Math.max(data.drift_detail.baseline_mean ?? 1, data.drift_detail.recent_mean ?? 1) * 100)}%` }} /><b>{number(data.drift_detail.baseline_mean, 0)}</b></div><div><span>Últimos 7 días</span><i className="accent" style={{ height: `${Math.min(100, (data.drift_detail.recent_mean ?? 0) / Math.max(data.drift_detail.baseline_mean ?? 1, data.drift_detail.recent_mean ?? 1) * 100)}%` }} /><b>{number(data.drift_detail.recent_mean, 0)}</b></div></div><p className="muted">{data.drift_detail.recent_count} recientes · {data.drift_detail.baseline_count} de referencia</p></Panel><Panel title="Calidad de evaluación" caption="Estado del ground truth de tus predicciones."><EvaluationStatus data={data} /></Panel></section>
     <section className="grid"><Panel title="Rendimiento del leaderboard" caption="Accuracy acumulada · tu posición siempre visible."><Leaderboard entries={data.leaderboard?.data ?? []} identity={data.identity?.display_name} mine={data.leaderboard_me} /></Panel><Panel title="Resumen de desempeño" caption="Indicadores disponibles de la API oficial."><PerformanceSummary data={data} /></Panel></section>
     <footer>Actualizado {new Date(data.generated_at).toLocaleString("es-CO")} · Las credenciales nunca llegan al navegador.</footer>
   </main></>;
@@ -77,6 +77,18 @@ function PerformanceSummary({ data }: { data: Dashboard }) {
     <div className="row"><span>Cobertura total</span><strong>{percent(data.coverage)}</strong></div>
     <div className="row"><span>Cambio vs. periodo anterior</span><strong className={drift !== null && drift < 0 ? "warn" : "goodText"}>{drift === null ? "—" : `${drift >= 0 ? "+" : ""}${drift.toFixed(1)} pp`}</strong></div>
     <p className="muted">{drift === null ? "Esperando el siguiente snapshot del leaderboard." : drift >= 0 ? "El desempeño está mejorando." : "El desempeño está disminuyendo; conviene revisar el próximo ciclo."}</p>
+  </div>;
+}
+
+function EvaluationStatus({ data }: { data: Dashboard }) {
+  const pending = Math.max(0, data.prediction_count - data.evaluated_count);
+  const evaluatedShare = data.prediction_count ? data.evaluated_count / data.prediction_count * 100 : 0;
+  return <div className="table">
+    <div className="row"><span>Predicciones guardadas</span><strong>{data.prediction_count}</strong></div>
+    <div className="row"><span>Con resultado real</span><strong>{data.evaluated_count}</strong></div>
+    <div className="row"><span>Pendientes de evaluar</span><strong>{pending}</strong></div>
+    <div className="row"><span>Cobertura de evaluación</span><strong>{percent(evaluatedShare)}</strong></div>
+    <p className="muted">{pending ? "El profesor aún no ha publicado todos los valores reales." : "Todas las predicciones disponibles tienen resultado real."}</p>
   </div>;
 }
 
