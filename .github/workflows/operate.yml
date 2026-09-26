@@ -48,7 +48,7 @@ jobs:
         run: python scripts/train_and_version.py
       - name: Check cycle and submit predictions
         run: python -m src.pipeline
-      - name: Report current leaderboard metrics
+      - name: Sync cumulative leaderboard metrics to Supabase
         if: always()
         continue-on-error: true
         run: python scripts/report_leaderboard.py

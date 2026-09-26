@@ -33,6 +33,13 @@ function wape(actual: number[], predicted: number[]) {
   return denominator ? actual.reduce((sum, value, i) => sum + Math.abs(value - predicted[i]), 0) / denominator : null;
 }
 
+function myLeaderboardRow(payload: unknown, displayName: string | undefined): Row | null {
+  if (!displayName || !payload || typeof payload !== "object") return null;
+  const entries = Array.isArray(payload) ? payload : (payload as { data?: unknown }).data;
+  if (!Array.isArray(entries)) return null;
+  return (entries.find((entry) => entry && typeof entry === "object" && (entry as Row).display_name === displayName) as Row | undefined) ?? null;
+}
+
 export async function GET() {
   const [runs, metrics, predictions, demand, me, leaderboard, health] = await Promise.all([
     supabase("pipeline_runs", "select=*&order=started_at.desc&limit=30"),
@@ -54,6 +61,21 @@ export async function GET() {
   const calculatedWape = wape(actual, predicted);
   const calculatedAccuracy = calculatedWape === null ? null : Math.max(0, 1 - calculatedWape) * 100;
   const latestRun = runs[0] ?? null;
+  const leaderboardMine = myLeaderboardRow(leaderboard, String((me as Row | null)?.display_name ?? ""));
+  const leaderboardMetrics = metrics.filter((row) => row.model_version === "pulso-leaderboard:cumulative");
+  const latestLeaderboardMetric = leaderboardMetrics[0] ?? null;
+  const previousLeaderboardMetric = leaderboardMetrics[1] ?? null;
+  const leaderboardAccuracy = Number.isFinite(Number(leaderboardMine?.accuracy))
+    ? Number(leaderboardMine?.accuracy)
+    : Number(latestLeaderboardMetric?.accuracy);
+  const leaderboardCoverage = Number.isFinite(Number(leaderboardMine?.coverage))
+    ? Number(leaderboardMine?.coverage) * 100
+    : Number(latestLeaderboardMetric?.coverage) * 100;
+  const leaderboardDrift = Number.isFinite(Number(latestLeaderboardMetric?.drift_score))
+    ? Number(latestLeaderboardMetric?.drift_score)
+    : latestLeaderboardMetric && previousLeaderboardMetric
+      ? Number(latestLeaderboardMetric.accuracy) - Number(previousLeaderboardMetric.accuracy)
+      : null;
 
   return NextResponse.json({
     generated_at: new Date().toISOString(),
@@ -70,8 +92,9 @@ export async function GET() {
     metrics,
     prediction_count: predictions.length,
     evaluated_count: evaluated.length,
-    accuracy: calculatedAccuracy ?? (metrics.find((r) => r.metric_scope === "rolling_24h")?.accuracy ?? null),
-    coverage: predictions.length ? evaluated.length / predictions.length * 100 : null,
+    accuracy: Number.isFinite(leaderboardAccuracy) ? leaderboardAccuracy : (calculatedAccuracy ?? null),
+    coverage: Number.isFinite(leaderboardCoverage) ? leaderboardCoverage : null,
+    leaderboard_drift: Number.isFinite(Number(leaderboardDrift)) ? leaderboardDrift : null,
     drift: drift === null ? (metrics.find((r) => r.metric_scope === "drift")?.drift_score ?? null) : drift * 100,
     drift_detail: { recent_mean: recentMean, baseline_mean: baselineMean, recent_count: recent.length, baseline_count: baseline.length },
     latest_run: latestRun,
