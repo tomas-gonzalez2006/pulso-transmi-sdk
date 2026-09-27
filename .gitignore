@@ -13,3 +13,5 @@ supabase/.temp/
 dashboard/node_modules/
 dashboard/.next/
 .vercel
+mlflow.db
+mlruns/

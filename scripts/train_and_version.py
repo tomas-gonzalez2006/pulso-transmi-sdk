@@ -14,8 +14,17 @@ import httpx
 import joblib
 import numpy as np
 import pandas as pd
+import sys
+from pathlib import Path
 
-from src.pulso_transmi.occupancy import FEATURES, recursive_predict, train
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "src"))
+sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    from pulso_transmi.occupancy import FEATURES, recursive_predict, train
+except ImportError:
+    from src.pulso_transmi.occupancy import FEATURES, recursive_predict, train
 
 API = os.getenv("PULSO_API_URL", "https://pulso-transmi.72-60-245-2.sslip.io").rstrip("/")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
@@ -33,7 +42,7 @@ def git_commit() -> str | None:
         return None
 
 
-def validation_accuracy(observations: pd.DataFrame, context: pd.DataFrame) -> tuple[float, int]:
+def validation_accuracy(observations: pd.DataFrame, context: pd.DataFrame) -> tuple[float, float, int]:
     """Evaluate a candidate on the final seven days held out from training."""
     cutoff = observations["observed_at"].max() - pd.Timedelta(days=7)
     history = observations[observations["observed_at"] <= cutoff].copy()
@@ -49,8 +58,9 @@ def validation_accuracy(observations: pd.DataFrame, context: pd.DataFrame) -> tu
     predicted = np.asarray(recursive_predict(history, context_train, targets, trained, cutoff), dtype=float)
     actual = validation["demand"].to_numpy(dtype=float)
     denominator = float(abs(actual).sum())
-    score = 100 * (1 - float(abs(actual - predicted).sum()) / denominator) if denominator else 0.0
-    return max(0.0, score), len(validation)
+    wape = float(abs(actual - predicted).sum()) / denominator if denominator else 0.0
+    score = 100 * (1 - wape) if denominator else 0.0
+    return max(0.0, score), wape, len(validation)
 
 
 def main() -> None:
@@ -66,17 +76,23 @@ def main() -> None:
     observations["observed_at"] = pd.to_datetime(observations["observed_at"], utc=True)
     context["observed_at"] = pd.to_datetime(context["observed_at"], utc=True)
     trained = train(observations, context)
-    validation_score, validation_rows = validation_accuracy(observations, context)
+    validation_score, validation_wape, validation_rows = validation_accuracy(observations, context)
     data_version = f"data-{sha256(observations_bytes)[:12]}-{sha256(context_bytes)[:12]}"
     model_version = f"xgboost-occupancy-recursive-{sha256((data_version + json.dumps(FEATURES)).encode())[:12]}"
-    artifact = Path("artifacts/models") / f"{model_version}.joblib"
+    artifact = REPO_ROOT / "artifacts" / "models" / f"{model_version}.joblib"
     artifact.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(trained.model, artifact)
     artifact_bytes = artifact.read_bytes(); artifact_hash = sha256(artifact_bytes); commit = git_commit()
     model_path = f"{model_version}.joblib"
     db_headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/json", "Prefer": "resolution=merge-duplicates,return=minimal"}
     dataset_payload = {"dataset_version": data_version, "api_url": API, "observations_sha256": sha256(observations_bytes), "context_sha256": sha256(context_bytes), "stations_sha256": sha256(stations_bytes), "metadata_sha256": sha256(metadata_bytes), "cutoff_at": observations["observed_at"].max().isoformat(), "rows_observations": len(observations), "rows_context": len(context), "metadata": json.loads(metadata_bytes)}
-    validation_metrics = {"feature_count": len(FEATURES), "validation_accuracy": round(validation_score, 6), "validation_rows": validation_rows, "validation_window": "last_7_days"}
+    validation_metrics = {
+        "feature_count": len(FEATURES),
+        "validation_accuracy": round(validation_score, 6),
+        "validation_wape": round(validation_wape, 6),
+        "validation_rows": validation_rows,
+        "validation_window": "last_7_days",
+    }
     with httpx.Client(timeout=60) as client:
         champions = client.get(f"{SUPABASE_URL}/rest/v1/model_versions", headers=db_headers, params={"select": "model_version,metrics", "status": "eq.champion", "order": "created_at.desc", "limit": "1"})
         champions.raise_for_status()
@@ -90,10 +106,38 @@ def main() -> None:
             if current:
                 client.patch(f"{SUPABASE_URL}/rest/v1/model_versions", headers=db_headers, params={"model_version": f"eq.{current['model_version']}"}, json={"status": "retired"}).raise_for_status()
             client.patch(f"{SUPABASE_URL}/rest/v1/model_versions", headers=db_headers, params={"model_version": f"eq.{model_version}"}, json={"status": "champion"}).raise_for_status()
-        client.post(f"{SUPABASE_URL}/rest/v1/pipeline_runs", headers=db_headers, json={"run_id": f"training-{model_version}", "run_type": "training", "status": "succeeded", "finished_at": datetime.now(timezone.utc).isoformat(), "model_version": model_version, "git_commit": commit, "records_processed": len(observations), "metadata": {"dataset_version": data_version, "artifact_sha256": artifact_hash}}).raise_for_status()
+        client.post(f"{SUPABASE_URL}/rest/v1/pipeline_runs", headers=db_headers, json={"run_id": f"training-{model_version}", "run_type": "training", "status": "succeeded", "finished_at": datetime.now(timezone.utc).isoformat(), "model_version": model_version, "git_commit": commit, "records_processed": len(observations), "metadata": {"dataset_version": data_version, "artifact_sha256": artifact_hash, "validation_accuracy": validation_score, "validation_wape": validation_wape, "promoted": promote}}).raise_for_status()
         upload = client.post(f"{SUPABASE_URL}/storage/v1/object/model-artifacts/{model_path}", headers={"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}", "Content-Type": "application/octet-stream", "x-upsert": "true"}, content=artifact_bytes)
         upload.raise_for_status()
-    print(json.dumps({"dataset_version": data_version, "model_version": model_version, "artifact_sha256": artifact_hash, "rows": len(observations), "feature_count": len(FEATURES), "validation_accuracy": validation_score, "current_champion_accuracy": current_score, "promoted": promote}))
+
+    # Track in MLflow if available
+    try:
+        import mlflow
+        os.environ["MLFLOW_ALLOW_FILE_STORE"] = "true"
+        tracking_uri = os.getenv("MLFLOW_TRACKING_URI", f"sqlite:///{REPO_ROOT / 'mlflow.db'}")
+        mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_experiment("pulso-transmi-occupancy")
+        with mlflow.start_run(run_name=model_version) as run:
+            mlflow.log_params({
+                "model_version": model_version,
+                "dataset_version": data_version,
+                "algorithm": "xgboost",
+                "feature_count": len(FEATURES),
+                "data_cutoff": observations["observed_at"].max().isoformat(),
+                "promoted": str(promote).lower(),
+            })
+            mlflow.log_metrics({
+                "validation_wape": round(validation_wape, 6),
+                "validation_accuracy": round(validation_score, 6),
+                "train_rows": len(observations),
+                "validation_rows": validation_rows,
+            })
+            if artifact.exists():
+                mlflow.log_artifact(str(artifact), artifact_path="model")
+    except Exception as exc:
+        print(f"[MLflow] Warning: logging to MLflow failed or skipped: {exc}")
+
+    print(json.dumps({"dataset_version": data_version, "model_version": model_version, "artifact_sha256": artifact_hash, "rows": len(observations), "feature_count": len(FEATURES), "validation_wape": validation_wape, "validation_accuracy": validation_score, "current_champion_accuracy": current_score, "promoted": promote}))
 
 
 if __name__ == "__main__":
