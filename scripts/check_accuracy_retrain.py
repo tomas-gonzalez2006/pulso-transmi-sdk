@@ -38,7 +38,10 @@ def official_accuracy() -> tuple[float | None, str]:
         payload: Any = leaderboard.json()
     entries = payload.get("data", []) if isinstance(payload, dict) else payload
     row = next((item for item in entries if item.get("display_name") == name), None)
-    return (float(row["accuracy"]), "public_api") if row and row.get("accuracy") is not None else (None, "student_not_found")
+    if row and row.get("accuracy") is not None:
+        accuracy = float(row["accuracy"])
+        return (accuracy * 100 if accuracy <= 1 else accuracy), "public_api"
+    return None, "student_not_found"
 
 
 def supabase_accuracy() -> tuple[float | None, str]:
@@ -52,10 +55,27 @@ def supabase_accuracy() -> tuple[float | None, str]:
         "order": "measured_at.desc",
         "limit": "1",
     }
-    response = httpx.get(f"{SUPABASE_URL}/rest/v1/model_metrics", headers=headers, params=params, timeout=30)
+    endpoint = f"{SUPABASE_URL}/rest/v1/model_metrics"
+    response = httpx.get(endpoint, headers=headers, params=params, timeout=30)
     response.raise_for_status()
     rows = response.json()
-    return (float(rows[0]["accuracy"]), "supabase") if rows and rows[0].get("accuracy") is not None else (None, "metric_not_found")
+    if rows and rows[0].get("accuracy") is not None:
+        return float(rows[0]["accuracy"]), "supabase:cumulative"
+
+    # Older deployments may not have leaderboard snapshots yet. Fall back to
+    # the latest released production evaluation so a real low score cannot be
+    # hidden merely because the collector has not populated cumulative rows.
+    production = {
+        "select": "accuracy,measured_at",
+        "metric_scope": "eq.production",
+        "accuracy": "not.is.null",
+        "order": "measured_at.desc",
+        "limit": "1",
+    }
+    response = httpx.get(endpoint, headers=headers, params=production, timeout=30)
+    response.raise_for_status()
+    rows = response.json()
+    return (float(rows[0]["accuracy"]), "supabase:production") if rows and rows[0].get("accuracy") is not None else (None, "metric_not_found")
 
 
 def recent_training() -> bool:
@@ -78,6 +98,12 @@ def main() -> None:
     except httpx.HTTPError as error:
         print(f"Official leaderboard unavailable ({error.__class__.__name__}); using Supabase.")
         accuracy, source = supabase_accuracy()
+    if accuracy is None:
+        try:
+            accuracy, source = supabase_accuracy()
+        except httpx.HTTPError:
+            accuracy = None
+            source = f"{source}:supabase_unavailable"
     if accuracy is None:
         output({"retrain": "false", "accuracy": "", "source": source})
         print(json.dumps({"retrain": False, "source": source, "reason": "no_accuracy"}))
