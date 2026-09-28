@@ -139,6 +139,36 @@ def load_history_from_supabase(cutoff: pd.Timestamp) -> pd.DataFrame | None:
     return history if not history.empty else None
 
 
+def _get_champion_version() -> str:
+    """Return the current champion model version from Supabase, or a fallback label."""
+    fallback = "xgboost-occupancy-recursive:unknown"
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        return fallback
+    headers = {
+        "apikey": SUPABASE_SERVICE_KEY,
+        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+    }
+    try:
+        resp = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/model_versions",
+            headers=headers,
+            params={
+                "select": "model_version",
+                "status": "eq.champion",
+                "order": "created_at.desc",
+                "limit": "1",
+            },
+            timeout=15,
+        )
+        resp.raise_for_status()
+        rows = resp.json()
+        if rows:
+            return rows[0]["model_version"]
+    except Exception as exc:
+        print(f"[pipeline] Warning: could not fetch champion version from Supabase: {exc}")
+    return fallback
+
+
 def main() -> None:
     if not API_KEY:
         raise SystemExit("PULSO_API_KEY is required")
@@ -184,10 +214,12 @@ def main() -> None:
             "value": max(0.0, round(float(value), 3)),
         } for target, value in zip(cycle["targets"], predictions_array, strict=True)]
 
+        # Resolve the current champion model version from Supabase (if available)
+        champion_version = _get_champion_version()
         run_id = f"gha-{os.getenv('GITHUB_RUN_ID', 'local')}-{os.getenv('GITHUB_RUN_ATTEMPT', '1')}-{cycle['cycle_id']}"
         model_commit = git_commit()
         model_trace = {
-            "version": "xgboost-occupancy-recursive:2.5",
+            "version": champion_version,
             "trained_at": datetime.now(timezone.utc).isoformat(),
             "training_data_end": cycle["data_cutoff"],
         }
@@ -201,7 +233,7 @@ def main() -> None:
             "model": model_trace,
             "predictions": predictions,
         }
-        idempotency_key = f"pulso-{cycle['cycle_id']}-xgboost-occupancy-2.5"
+        idempotency_key = f"pulso-{cycle['cycle_id']}-{champion_version}"
         submission = client.post("/v1/submissions", headers={"Idempotency-Key": idempotency_key}, json=payload)
         if submission.status_code == 409:
             print(f"Submission already exists for cycle {cycle['cycle_id']}; skipping duplicate.")
