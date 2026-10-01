@@ -39,16 +39,44 @@ def git_commit() -> str | None:
         return None
 
 
-def load_data() -> tuple[pd.DataFrame, pd.DataFrame, bytes, bytes, bytes, bytes]:
+def load_data(cutoff: pd.Timestamp | None = None) -> tuple[pd.DataFrame, pd.DataFrame, bytes, bytes, bytes, bytes]:
     with httpx.Client(timeout=120) as client:
-        observations_bytes = client.get(f"{API}/v1/downloads/observations.csv").content
         context_bytes = client.get(f"{API}/v1/downloads/context.csv").content
         stations_bytes = client.get(f"{API}/v1/downloads/stations.csv").content
         metadata_bytes = client.get(f"{API}/v1/downloads/metadata.json").content
-    observations = pd.read_csv(io.BytesIO(observations_bytes), dtype={"station_id": "string"})
     context = pd.read_csv(io.BytesIO(context_bytes))
-    observations["observed_at"] = pd.to_datetime(observations["observed_at"], utc=True)
     context["observed_at"] = pd.to_datetime(context["observed_at"], utc=True)
+    if SUPABASE_URL and SUPABASE_KEY:
+        headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
+        params = {
+            "select": "station_id,observed_at,demand",
+            "order": "observed_at.asc",
+            "limit": "100000",
+        }
+        if cutoff is not None:
+            params["observed_at"] = f"lte.{cutoff.isoformat()}"
+        response = httpx.get(
+            f"{SUPABASE_URL}/rest/v1/demand_observations",
+            headers=headers,
+            params=params,
+            timeout=120,
+        )
+        response.raise_for_status()
+        observations = pd.DataFrame(response.json())
+        if observations.empty:
+            raise RuntimeError("Supabase returned no observations for the requested training cutoff")
+        observations["station_id"] = observations["station_id"].astype("string")
+        observations["observed_at"] = pd.to_datetime(observations["observed_at"], utc=True)
+        observations["demand"] = pd.to_numeric(observations["demand"], errors="raise")
+        observations_bytes = observations.to_csv(index=False).encode("utf-8")
+    else:
+        with httpx.Client(timeout=120) as client:
+            observations_bytes = client.get(f"{API}/v1/downloads/observations.csv").content
+        observations = pd.read_csv(io.BytesIO(observations_bytes), dtype={"station_id": "string"})
+        observations["observed_at"] = pd.to_datetime(observations["observed_at"], utc=True)
+        if cutoff is not None:
+            observations = observations[observations["observed_at"] <= cutoff].copy()
+            observations_bytes = observations.to_csv(index=False).encode("utf-8")
     return observations, context, observations_bytes, context_bytes, stations_bytes, metadata_bytes
 
 
@@ -76,9 +104,24 @@ def main() -> None:
     if not SUPABASE_URL or not SUPABASE_KEY:
         raise SystemExit("SUPABASE_URL and SUPABASE_SERVICE_KEY are required for version registration")
 
-    observations, context, observations_bytes, context_bytes, stations_bytes, metadata_bytes = load_data()
-    data_version = f"data-{sha256(observations_bytes)[:12]}-{sha256(context_bytes)[:12]}"
+    cutoff_env = os.getenv("TRAINING_CUTOFF")
+    requested_cutoff = pd.Timestamp(cutoff_env) if cutoff_env else None
+    if requested_cutoff is not None:
+        requested_cutoff = requested_cutoff.tz_localize("UTC") if requested_cutoff.tzinfo is None else requested_cutoff.tz_convert("UTC")
+    observations, context, observations_bytes, context_bytes, stations_bytes, metadata_bytes = load_data(requested_cutoff)
     data_cutoff = observations["observed_at"].max()
+    if requested_cutoff is not None and data_cutoff > requested_cutoff:
+        raise RuntimeError("Training data exceeds the requested cutoff")
+    # The public context download can lag the released observation stream.
+    # Carry the last known context forward so post-release observations are
+    # not silently discarded from training.
+    context = context.sort_values("observed_at").drop_duplicates("observed_at")
+    context_columns = ["rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity"]
+    context_index = pd.DatetimeIndex(sorted(set(context["observed_at"]) | set(observations["observed_at"])))
+    context = context.set_index("observed_at").reindex(context_index).ffill().reset_index(names="observed_at")
+    if context[context_columns].isna().any().any():
+        raise RuntimeError("Context has no usable values at the requested training cutoff")
+    data_version = f"data-{sha256(observations_bytes)[:12]}-{sha256(context_bytes)[:12]}"
     candidates: list[dict[str, object]] = []
     for name, parameters, target_transform in CANDIDATES:
         accuracy, wape, rows = evaluate(observations, context, parameters, target_transform)
