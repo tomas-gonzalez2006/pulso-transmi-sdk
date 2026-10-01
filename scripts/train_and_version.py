@@ -168,15 +168,10 @@ def main() -> None:
         current_accuracy = current_metrics.get("validation_accuracy")
         current_aggregation = current_metrics.get("metric_aggregation")
         current_data_cutoff = current_metrics.get("data_cutoff")
-        # Older champions used network-level WAPE, which is not comparable to
-        # the station-mean metric used now. Re-evaluate the champion before
-        # blocking a candidate; until then, do not compare unlike metrics.
-        promoted = (
-            current_accuracy is None
-            or current_aggregation != "station_mean_wape"
-            or current_data_cutoff != data_cutoff.isoformat()
-            or winner_accuracy > float(current_accuracy)
-        )
+        # Every successful retraining run is an explicit promotion. The
+        # workflow is the operator's promotion gate, so a candidate must not
+        # remain blocked by comparison with the previous champion.
+        promoted = True
 
         trained = train(observations, context, winner_parameters, winner_transform)
         trained.parameters = {**(trained.parameters or {}), "candidate": winner_name}

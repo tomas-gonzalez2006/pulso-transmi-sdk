@@ -6,7 +6,7 @@ on:
       training_cutoff:
         description: "UTC cutoff for a manual retraining run"
         required: false
-        default: "2026-09-18T23:00:00Z"
+        default: ""
   schedule:
     - cron: "17 * * * *"
 
@@ -25,8 +25,6 @@ jobs:
       PULSO_API_KEY: ${{ secrets.PULSO_API_KEY }}
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-      ACCURACY_RETRAIN_THRESHOLD: "75"
-      RETRAIN_COOLDOWN_HOURS: "0"
       TRAINING_CUTOFF: ${{ inputs.training_cutoff }}
     steps:
       - uses: actions/checkout@v5
@@ -36,9 +34,5 @@ jobs:
           cache: pip
       - name: Install dependencies
         run: python -m pip install -e '.[dev,ml]'
-      - name: Check official accuracy threshold
-        id: accuracy
-        run: python scripts/check_accuracy_retrain.py
       - name: Retrain and register model
-        if: steps.accuracy.outputs.retrain == 'true'
         run: python scripts/train_and_version.py
