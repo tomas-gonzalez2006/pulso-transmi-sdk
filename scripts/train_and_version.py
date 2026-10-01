@@ -7,6 +7,7 @@ import io
 import json
 import os
 import subprocess
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,10 +41,23 @@ def git_commit() -> str | None:
 
 
 def load_data(cutoff: pd.Timestamp | None = None) -> tuple[pd.DataFrame, pd.DataFrame, bytes, bytes, bytes, bytes]:
-    with httpx.Client(timeout=120) as client:
-        context_bytes = client.get(f"{API}/v1/downloads/context.csv").content
-        stations_bytes = client.get(f"{API}/v1/downloads/stations.csv").content
-        metadata_bytes = client.get(f"{API}/v1/downloads/metadata.json").content
+    def download(client: httpx.Client, path: str) -> bytes:
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                response = client.get(path)
+                response.raise_for_status()
+                return response.content
+            except (httpx.HTTPError, httpx.TimeoutException) as error:
+                last_error = error
+                if attempt < 2:
+                    time.sleep(2 ** attempt)
+        raise RuntimeError(f"Could not download {path} after 3 attempts") from last_error
+
+    with httpx.Client(timeout=httpx.Timeout(180, connect=45)) as client:
+        context_bytes = download(client, f"{API}/v1/downloads/context.csv")
+        stations_bytes = download(client, f"{API}/v1/downloads/stations.csv")
+        metadata_bytes = download(client, f"{API}/v1/downloads/metadata.json")
     context = pd.read_csv(io.BytesIO(context_bytes))
     context["observed_at"] = pd.to_datetime(context["observed_at"], utc=True)
     if SUPABASE_URL and SUPABASE_KEY:
@@ -71,7 +85,7 @@ def load_data(cutoff: pd.Timestamp | None = None) -> tuple[pd.DataFrame, pd.Data
         observations_bytes = observations.to_csv(index=False).encode("utf-8")
     else:
         with httpx.Client(timeout=120) as client:
-            observations_bytes = client.get(f"{API}/v1/downloads/observations.csv").content
+            observations_bytes = download(client, f"{API}/v1/downloads/observations.csv")
         observations = pd.read_csv(io.BytesIO(observations_bytes), dtype={"station_id": "string"})
         observations["observed_at"] = pd.to_datetime(observations["observed_at"], utc=True)
         if cutoff is not None:
