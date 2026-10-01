@@ -27,6 +27,7 @@ class OccupancyModel:
     fallback_seasonal: float
     last_context: dict[str, float]
     target_transform: str = "log1p"
+    parameters: dict[str, object] | None = None
 
 
 def _temporal(data: pd.DataFrame) -> pd.DataFrame:
@@ -65,20 +66,43 @@ def build_training_frame(history: pd.DataFrame, context: pd.DataFrame) -> tuple[
     return _temporal(data), station_codes
 
 
-def train(history: pd.DataFrame, context: pd.DataFrame) -> OccupancyModel:
+def train(
+    history: pd.DataFrame,
+    context: pd.DataFrame,
+    parameters: dict[str, object] | None = None,
+    target_transform: str = "log1p",
+) -> OccupancyModel:
     frame, station_codes = build_training_frame(history, context)
     train_frame = frame.dropna(subset=[column for column in FEATURES if column != "seasonal_mean"] + ["demand"]).copy()
     seasonal = train_frame.groupby(["station_id", "slot"])["demand"].mean()
     fallback = float(train_frame["demand"].mean())
     train_frame["seasonal_mean"] = [float(seasonal.get((s, slot), fallback)) for s, slot in zip(train_frame["station_id"], train_frame["slot"], strict=True)]
-    model = XGBRegressor(n_estimators=400, max_depth=5, learning_rate=0.05, min_child_weight=5, subsample=0.85, colsample_bytree=0.7, reg_lambda=5.0, objective="reg:squarederror", tree_method="hist", n_jobs=-1, random_state=42)
+    model_parameters: dict[str, object] = {
+        "n_estimators": 400,
+        "max_depth": 5,
+        "learning_rate": 0.05,
+        "min_child_weight": 5,
+        "subsample": 0.85,
+        "colsample_bytree": 0.7,
+        "reg_lambda": 5.0,
+        "objective": "reg:squarederror",
+        "tree_method": "hist",
+        "n_jobs": -1,
+        "random_state": 42,
+    }
+    if parameters:
+        model_parameters.update(parameters)
+    model = XGBRegressor(**model_parameters)
     # Demand variance grows with station volume. Training in log space reduces
     # oversized peaks while preserving the original demand scale at inference.
-    model.fit(train_frame[FEATURES], np.log1p(train_frame["demand"]))
+    if target_transform not in {"log1p", "identity"}:
+        raise ValueError(f"Unsupported target transform: {target_transform}")
+    target = np.log1p(train_frame["demand"]) if target_transform == "log1p" else train_frame["demand"]
+    model.fit(train_frame[FEATURES], target)
     known_context = context.sort_values("observed_at").iloc[-1]
     last_context = {column: float(known_context[column]) for column in CONTEXT_COLUMNS}
     seasonal_means = {(str(station), int(slot)): float(value) for (station, slot), value in seasonal.items()}
-    return OccupancyModel(model, station_codes, seasonal_means, fallback, last_context, "log1p")
+    return OccupancyModel(model, station_codes, seasonal_means, fallback, last_context, target_transform, model_parameters)
 
 
 def future_features(history: pd.DataFrame, context: pd.DataFrame, targets: list[dict], trained: OccupancyModel, cutoff: pd.Timestamp) -> pd.DataFrame:
@@ -120,17 +144,28 @@ def recursive_predict(history: pd.DataFrame, context: pd.DataFrame, targets: lis
     working["observed_at"] = pd.to_datetime(working["observed_at"], utc=True)
     ordered = sorted(enumerate(targets), key=lambda item: (pd.Timestamp(item[1]["target_at"]), str(item[1]["station_id"])))
     predictions: dict[int, float] = {}
-    for index, target in ordered:
-        features = future_features(working, context, [target], trained, cutoff)
-        # Keep the trained estimator's forecast unchanged. Smoothing recursive
-        # outputs reduced visible jumps but worsened historical WAPE.
-        prediction = float(trained.model.predict(features)[0])
-        value = np.expm1(prediction) if trained.target_transform == "log1p" else prediction
-        value = max(0.0, float(value))
-        predictions[index] = round(value, 3)
-        working = pd.concat([working, pd.DataFrame([{
-            "station_id": str(target["station_id"]),
-            "observed_at": pd.Timestamp(target["target_at"]),
-            "demand": value,
-        }])], ignore_index=True)
+    position = 0
+    while position < len(ordered):
+        timestamp = pd.Timestamp(ordered[position][1]["target_at"])
+        end = position + 1
+        while end < len(ordered) and pd.Timestamp(ordered[end][1]["target_at"]) == timestamp:
+            end += 1
+        batch = ordered[position:end]
+        batch_targets = [target for _, target in batch]
+        features = future_features(working, context, batch_targets, trained, cutoff)
+        # All stations at one target timestamp depend only on prior timestamps,
+        # so they can be predicted together without changing recursive semantics.
+        raw_predictions = trained.model.predict(features)
+        values = np.expm1(raw_predictions) if trained.target_transform == "log1p" else raw_predictions
+        rows = []
+        for (index, target), raw_value in zip(batch, values, strict=True):
+            value = max(0.0, float(raw_value))
+            predictions[index] = round(value, 3)
+            rows.append({
+                "station_id": str(target["station_id"]),
+                "observed_at": timestamp,
+                "demand": value,
+            })
+        working = pd.concat([working, pd.DataFrame(rows)], ignore_index=True)
+        position = end
     return [predictions[index] for index in range(len(targets))]

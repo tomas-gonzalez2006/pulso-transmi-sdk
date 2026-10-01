@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import joblib
 import math
 import os
 import subprocess
@@ -139,34 +140,43 @@ def load_history_from_supabase(cutoff: pd.Timestamp) -> pd.DataFrame | None:
     return history if not history.empty else None
 
 
-def _get_champion_version() -> str:
-    """Return the current champion model version from Supabase, or a fallback label."""
-    fallback = "xgboost-occupancy-recursive:unknown"
+def load_champion_model() -> tuple[object, dict] | None:
+    """Load the exact artifact registered as champion in Supabase."""
     if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
-        return fallback
-    headers = {
-        "apikey": SUPABASE_SERVICE_KEY,
-        "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
-    }
+        return None
+    headers = {"apikey": SUPABASE_SERVICE_KEY, "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}"}
     try:
-        resp = httpx.get(
+        response = httpx.get(
             f"{SUPABASE_URL}/rest/v1/model_versions",
             headers=headers,
             params={
-                "select": "model_version",
+                "select": "model_version,artifact_path,created_at,git_commit,metrics,feature_schema",
                 "status": "eq.champion",
                 "order": "created_at.desc",
                 "limit": "1",
             },
-            timeout=15,
+            timeout=20,
         )
-        resp.raise_for_status()
-        rows = resp.json()
-        if rows:
-            return rows[0]["model_version"]
-    except Exception as exc:
-        print(f"[pipeline] Warning: could not fetch champion version from Supabase: {exc}")
-    return fallback
+        response.raise_for_status()
+        rows = response.json()
+        if not rows:
+            return None
+        metadata = rows[0]
+        artifact_path = str(metadata["artifact_path"]).lstrip("/")
+        artifact = httpx.get(
+            f"{SUPABASE_URL}/storage/v1/object/model-artifacts/{artifact_path}",
+            headers=headers,
+            timeout=60,
+        )
+        artifact.raise_for_status()
+        trained = joblib.load(io.BytesIO(artifact.content))
+        if not hasattr(trained, "model") or not hasattr(trained, "station_codes"):
+            print("[pipeline] Champion artifact has legacy format; using fresh local training.")
+            return None
+        return trained, metadata
+    except (httpx.HTTPError, KeyError, ValueError, EOFError) as error:
+        print(f"[pipeline] Warning: could not load registered champion: {error.__class__.__name__}")
+        return None
 
 
 def main() -> None:
@@ -205,7 +215,22 @@ def main() -> None:
         context = pd.read_csv(io.BytesIO(context_response.content))
         context["observed_at"] = pd.to_datetime(context["observed_at"], utc=True)
         context = context[context["observed_at"] <= cutoff].copy()
-        trained = train_xgb(history, context)
+        champion = load_champion_model()
+        if champion is None:
+            trained = train_xgb(history, context)
+            model_metadata = {}
+            print("Using freshly trained fallback model.")
+        else:
+            trained, model_metadata = champion
+            # Keep the registered estimator and learned seasonal statistics,
+            # but refresh exogenous context to the current cutoff.
+            if not context.empty:
+                latest_context = context.sort_values("observed_at").iloc[-1]
+                trained.last_context = {
+                    column: float(latest_context[column])
+                    for column in ("rain_mm", "rain_forecast", "temperature_c", "temperature_forecast", "event_intensity")
+                }
+            print(f"Using registered champion: {model_metadata['model_version']}")
         predictions_array = recursive_predict(history, context, cycle["targets"], trained, cutoff)
         validate_prediction_batch(cycle["targets"], predictions_array)
         predictions = [{
@@ -214,14 +239,12 @@ def main() -> None:
             "value": max(0.0, round(float(value), 3)),
         } for target, value in zip(cycle["targets"], predictions_array, strict=True)]
 
-        # Resolve the current champion model version from Supabase (if available)
-        champion_version = _get_champion_version()
         run_id = f"gha-{os.getenv('GITHUB_RUN_ID', 'local')}-{os.getenv('GITHUB_RUN_ATTEMPT', '1')}-{cycle['cycle_id']}"
-        model_commit = git_commit()
+        model_commit = model_metadata.get("git_commit") or git_commit()
         model_trace = {
-            "version": champion_version,
-            "trained_at": datetime.now(timezone.utc).isoformat(),
-            "training_data_end": cycle["data_cutoff"],
+            "version": model_metadata.get("model_version", "xgboost-occupancy-recursive:local"),
+            "trained_at": model_metadata.get("created_at", datetime.now(timezone.utc).isoformat()),
+            "training_data_end": (model_metadata.get("metrics") or {}).get("data_cutoff", cycle["data_cutoff"]),
         }
         if model_commit:
             model_trace["git_commit"] = model_commit
@@ -233,7 +256,7 @@ def main() -> None:
             "model": model_trace,
             "predictions": predictions,
         }
-        idempotency_key = f"pulso-{cycle['cycle_id']}-{champion_version}"
+        idempotency_key = f"pulso-{cycle['cycle_id']}-{model_trace['version']}"
         submission = client.post("/v1/submissions", headers={"Idempotency-Key": idempotency_key}, json=payload)
         if submission.status_code == 409:
             print(f"Submission already exists for cycle {cycle['cycle_id']}; skipping duplicate.")
