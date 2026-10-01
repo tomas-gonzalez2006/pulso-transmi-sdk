@@ -53,7 +53,7 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, bytes, bytes, bytes, bytes]
 
 
 def evaluate(observations: pd.DataFrame, context: pd.DataFrame, parameters: dict[str, object], target_transform: str) -> tuple[float, float, int]:
-    cutoff = observations["observed_at"].max() - pd.Timedelta(days=7)
+    cutoff = observations["observed_at"].max() - pd.Timedelta(7, unit="D")
     history = observations[observations["observed_at"] <= cutoff].copy()
     validation = observations[observations["observed_at"] > cutoff].copy()
     context_train = context[context["observed_at"] <= cutoff].copy()
@@ -97,8 +97,17 @@ def main() -> None:
         champions = client.get(f"{SUPABASE_URL}/rest/v1/model_versions", headers=headers, params={"select": "model_version,metrics", "status": "eq.champion", "order": "created_at.desc", "limit": "1"})
         champions.raise_for_status()
         current = champions.json()[0] if champions.json() else None
-        current_accuracy = ((current or {}).get("metrics") or {}).get("validation_accuracy")
-        promoted = current_accuracy is None or winner_accuracy > float(current_accuracy)
+        current_metrics = (current or {}).get("metrics") or {}
+        current_accuracy = current_metrics.get("validation_accuracy")
+        current_aggregation = current_metrics.get("metric_aggregation")
+        # Older champions used network-level WAPE, which is not comparable to
+        # the station-mean metric used now. Re-evaluate the champion before
+        # blocking a candidate; until then, do not compare unlike metrics.
+        promoted = (
+            current_accuracy is None
+            or current_aggregation != "station_mean_wape"
+            or winner_accuracy > float(current_accuracy)
+        )
 
         trained = train(observations, context, winner_parameters, winner_transform)
         trained.parameters = {**(trained.parameters or {}), "candidate": winner_name}
@@ -108,7 +117,7 @@ def main() -> None:
         artifact_bytes = artifact.read_bytes()
         artifact_hash = sha256(artifact_bytes)
         commit = git_commit()
-        validation_metrics = {"feature_count": len(FEATURES), "validation_accuracy": winner_accuracy, "validation_wape": winner_wape, "validation_rows": int(winner["validation_rows"]), "validation_window": "last_7_days_recursive", "data_cutoff": data_cutoff.isoformat(), "target_transform": winner_transform, "parameters": winner_parameters, "candidate_results": candidates}
+        validation_metrics = {"feature_count": len(FEATURES), "validation_accuracy": winner_accuracy, "validation_wape": winner_wape, "metric_aggregation": "station_mean_wape", "validation_rows": int(winner["validation_rows"]), "validation_window": "last_7_days_recursive", "data_cutoff": data_cutoff.isoformat(), "target_transform": winner_transform, "parameters": winner_parameters, "candidate_results": candidates}
         dataset_payload = {"dataset_version": data_version, "api_url": API, "observations_sha256": sha256(observations_bytes), "context_sha256": sha256(context_bytes), "stations_sha256": sha256(stations_bytes), "metadata_sha256": sha256(metadata_bytes), "cutoff_at": data_cutoff.isoformat(), "rows_observations": len(observations), "rows_context": len(context), "metadata": json.loads(metadata_bytes)}
         model_payload = {"model_version": model_version, "dataset_version": data_version, "algorithm": "xgboost", "artifact_sha256": artifact_hash, "artifact_path": f"models/{model_version}.joblib", "git_commit": commit, "status": "candidate", "metrics": validation_metrics, "feature_schema": list(FEATURES)}
         client.post(f"{SUPABASE_URL}/rest/v1/dataset_versions", headers=headers, json=dataset_payload).raise_for_status()
