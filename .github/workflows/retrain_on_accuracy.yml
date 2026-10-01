@@ -21,7 +21,7 @@ jobs:
       SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
       SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
       ACCURACY_RETRAIN_THRESHOLD: "75"
-      RETRAIN_COOLDOWN_HOURS: "24"
+      RETRAIN_COOLDOWN_HOURS: "0"
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6

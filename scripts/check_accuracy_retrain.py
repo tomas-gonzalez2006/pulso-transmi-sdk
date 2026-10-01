@@ -10,7 +10,7 @@ import httpx
 
 
 THRESHOLD = float(os.getenv("ACCURACY_RETRAIN_THRESHOLD", "75"))
-COOLDOWN_HOURS = float(os.getenv("RETRAIN_COOLDOWN_HOURS", "24"))
+COOLDOWN_HOURS = float(os.getenv("RETRAIN_COOLDOWN_HOURS", "0"))
 API_BASE = os.getenv("PULSO_API_URL", "https://pulso-transmi.72-60-245-2.sslip.io").rstrip("/")
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
@@ -109,7 +109,7 @@ def main() -> None:
         print(json.dumps({"retrain": False, "source": source, "reason": "no_accuracy"}))
         return
     should_retrain = accuracy < THRESHOLD
-    cooldown = recent_training() if should_retrain else False
+    cooldown = COOLDOWN_HOURS > 0 and recent_training() if should_retrain else False
     if cooldown:
         should_retrain = False
     output({"retrain": str(should_retrain).lower(), "accuracy": f"{accuracy:.6f}", "source": source})
