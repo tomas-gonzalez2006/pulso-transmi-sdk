@@ -14,7 +14,7 @@ def history_covers_cycle(history: pd.DataFrame | None, cutoff: pd.Timestamp, sta
     if history is None or history.empty or not station_ids:
         return False
     cutoff = pd.Timestamp(cutoff).floor("15min")
-    window_start = cutoff - pd.Timedelta(days=MIN_HISTORY_DAYS)
+    window_start = cutoff - pd.Timedelta(MIN_HISTORY_DAYS, unit="D")
     expected = pd.date_range(window_start, cutoff, freq="15min", tz="UTC")
     recent = history[history["observed_at"].between(window_start, cutoff)]
     for station in station_ids:

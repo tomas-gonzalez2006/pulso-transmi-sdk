@@ -39,9 +39,21 @@ def main() -> None:
             )
             response.raise_for_status(); evaluated.append((value, float(row["predicted_value"])))
         if evaluated:
-            numerator = sum(abs(a - p) for a, p in evaluated)
-            denominator = sum(abs(a) for a, _ in evaluated)
-            wape = numerator / denominator if denominator else None
+            # Match the official leaderboard: WAPE per station, then average.
+            station_pairs = {}
+            evaluated_rows = [
+                row for row in predictions
+                if (str(row["station_id"]), stamp(str(row["target_at"]))) in actuals
+            ]
+            for row, (actual, predicted) in zip(evaluated_rows, evaluated, strict=True):
+                station_pairs.setdefault(str(row["station_id"]), []).append((actual, predicted))
+            station_wapes = [
+                sum(abs(actual - predicted) for actual, predicted in pairs) /
+                sum(abs(actual) for actual, _ in pairs)
+                for pairs in station_pairs.values()
+                if sum(abs(actual) for actual, _ in pairs)
+            ]
+            wape = sum(station_wapes) / len(station_wapes) if station_wapes else None
             accuracy = max(0.0, 1.0 - wape) * 100 if wape is not None else None
             version = str(predictions[0]["model_version"])
             metrics = {"model_version": version, "metric_scope": "production", "accuracy": accuracy, "wape": wape, "coverage": len(evaluated) / len(predictions), "metadata": {"evaluated_predictions": len(evaluated)}}

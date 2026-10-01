@@ -25,7 +25,7 @@ def features(frame: pd.DataFrame, context: pd.DataFrame) -> pd.DataFrame:
     frame = frame.sort_values(["station_id", "observed_at"]).copy()
     totals = frame.groupby("observed_at")["demand"].sum()
     for lag in (1, 4, 96, 672):
-        frame[f"network_total_lag_{lag}"] = [totals.get(timestamp - pd.Timedelta(minutes=15 * lag), np.nan) for timestamp in frame["observed_at"]]
+        frame[f"network_total_lag_{lag}"] = [totals.get(timestamp - pd.Timedelta(15 * lag, unit="min"), np.nan) for timestamp in frame["observed_at"]]
     frame = frame.merge(context, on="observed_at", how="left")
     group = frame.groupby("station_id", sort=False)["demand"]
     for lag in (1, 2, 4, 96, 192, 672):
@@ -88,7 +88,13 @@ def main() -> None:
         model.fit(train[feature_columns], train["demand"])
         prediction = np.maximum(0, model.predict(validation[feature_columns]))
         predictions[name] = prediction
-        model_scores[name] = round(float(100 * (1 - np.abs(validation["demand"].to_numpy() - prediction).sum() / validation["demand"].sum())), 4)
+        station_wape = (
+            pd.Series(np.abs(validation["demand"].to_numpy() - prediction), index=validation.index)
+            .groupby(validation["station_id"].astype(str))
+            .sum()
+            / validation["demand"].groupby(validation["station_id"].astype(str)).sum()
+        )
+        model_scores[name] = round(float(100 * (1 - station_wape.mean())), 4)
     best_name = max(model_scores, key=model_scores.get)
     validation["prediction"] = predictions[best_name]
     artifacts = Path("artifacts")

@@ -63,8 +63,12 @@ def evaluate(observations: pd.DataFrame, context: pd.DataFrame, parameters: dict
     targets = [{"station_id": str(row.station_id), "target_at": row.observed_at.isoformat()} for row in validation.itertuples()]
     predicted = np.asarray(recursive_predict(history, context_train, targets, trained, cutoff), dtype=float)
     actual = validation["demand"].to_numpy(dtype=float)
-    denominator = float(np.abs(actual).sum())
-    wape = float(np.abs(actual - predicted).sum()) / denominator if denominator else 0.0
+    # Match the official leaderboard: average station-level WAPE.
+    errors = pd.Series(np.abs(actual - predicted), index=validation.index)
+    actual_series = pd.Series(actual, index=validation.index)
+    station = validation["station_id"].astype(str)
+    station_wape = errors.groupby(station).sum() / actual_series.groupby(station).sum()
+    wape = float(station_wape.mean()) if not station_wape.empty else 0.0
     return max(0.0, 100 * (1 - wape)), wape, len(validation)
 
 

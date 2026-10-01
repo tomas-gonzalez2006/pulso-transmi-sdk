@@ -120,12 +120,12 @@ def future_features(history: pd.DataFrame, context: pd.DataFrame, targets: list[
         # that creates an artificial network collapse after the first horizon
         # and makes the following predictions oscillate.
         for lag in (1, 4, 96, 672):
-            value = totals.get(timestamp - pd.Timedelta(minutes=15 * lag), np.nan)
+            value = totals.get(timestamp - pd.Timedelta(15 * lag, unit="min"), np.nan)
             row[f"network_total_lag_{lag}"] = float(value) if pd.notna(value) else np.nan
         for column in CONTEXT_COLUMNS: row[column] = trained.last_context[column]
-        for lag in (1, 2, 4, 96, 192, 672): row[f"lag_{lag}"] = float(indexed.get((station, timestamp - pd.Timedelta(minutes=15 * lag)), np.nan))
+        for lag in (1, 2, 4, 96, 192, 672): row[f"lag_{lag}"] = float(indexed.get((station, timestamp - pd.Timedelta(15 * lag, unit="min")), np.nan))
         def available_mean(lags: range) -> float:
-            values = [indexed.get((station, timestamp - pd.Timedelta(minutes=15 * lag)), np.nan) for lag in lags]
+            values = [indexed.get((station, timestamp - pd.Timedelta(15 * lag, unit="min")), np.nan) for lag in lags]
             available = [float(value) for value in values if pd.notna(value)]
             return float(np.mean(available)) if available else np.nan
 
