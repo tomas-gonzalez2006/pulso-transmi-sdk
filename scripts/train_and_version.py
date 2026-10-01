@@ -62,21 +62,31 @@ def load_data(cutoff: pd.Timestamp | None = None) -> tuple[pd.DataFrame, pd.Data
     context["observed_at"] = pd.to_datetime(context["observed_at"], utc=True)
     if SUPABASE_URL and SUPABASE_KEY:
         headers = {"apikey": SUPABASE_KEY, "Authorization": f"Bearer {SUPABASE_KEY}"}
-        params = {
-            "select": "station_id,observed_at,demand",
-            "order": "observed_at.asc",
-            "limit": "100000",
-        }
-        if cutoff is not None:
-            params["observed_at"] = f"lte.{cutoff.isoformat()}"
-        response = httpx.get(
-            f"{SUPABASE_URL}/rest/v1/demand_observations",
-            headers=headers,
-            params=params,
-            timeout=120,
-        )
-        response.raise_for_status()
-        observations = pd.DataFrame(response.json())
+        rows: list[dict] = []
+        page_size = 1000
+        offset = 0
+        while True:
+            params = {
+                "select": "station_id,observed_at,demand",
+                "order": "observed_at.asc",
+                "limit": str(page_size),
+                "offset": str(offset),
+            }
+            if cutoff is not None:
+                params["observed_at"] = f"lte.{cutoff.isoformat()}"
+            response = httpx.get(
+                f"{SUPABASE_URL}/rest/v1/demand_observations",
+                headers=headers,
+                params=params,
+                timeout=120,
+            )
+            response.raise_for_status()
+            page = response.json()
+            rows.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+        observations = pd.DataFrame(rows)
         if observations.empty:
             raise RuntimeError("Supabase returned no observations for the requested training cutoff")
         observations["station_id"] = observations["station_id"].astype("string")
