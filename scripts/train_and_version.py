@@ -24,8 +24,16 @@ SUPABASE_URL = os.getenv("SUPABASE_URL", "").rstrip("/")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_KEY") or os.getenv("SUPABASE_KEY")
 
 CANDIDATES = (
-    ("xgboost-log1p", {}, "log1p"),
-    ("xgboost-identity", {"n_jobs": 4}, "identity"),
+    ("xgboost-log1p-baseline", {}, "log1p"),
+    ("xgboost-log1p-shallow", {"n_estimators": 700, "max_depth": 4, "learning_rate": 0.03, "min_child_weight": 3, "subsample": 0.9, "colsample_bytree": 0.9, "reg_lambda": 3.0}, "log1p"),
+    ("xgboost-log1p-deep", {"n_estimators": 700, "max_depth": 6, "learning_rate": 0.03, "min_child_weight": 8, "subsample": 0.9, "colsample_bytree": 0.9, "reg_lambda": 8.0}, "log1p"),
+    ("xgboost-log1p-regularized", {"n_estimators": 600, "max_depth": 5, "learning_rate": 0.035, "min_child_weight": 10, "subsample": 0.8, "colsample_bytree": 0.8, "reg_lambda": 12.0}, "log1p"),
+    ("xgboost-log1p-fast", {"n_estimators": 300, "max_depth": 3, "learning_rate": 0.07, "min_child_weight": 3, "subsample": 0.95, "colsample_bytree": 0.95, "reg_lambda": 2.0}, "log1p"),
+    ("xgboost-log1p-wide", {"n_estimators": 500, "max_depth": 8, "learning_rate": 0.04, "min_child_weight": 12, "subsample": 0.85, "colsample_bytree": 0.75, "reg_lambda": 15.0}, "log1p"),
+    ("xgboost-identity-tuned", {"n_estimators": 600, "max_depth": 4, "learning_rate": 0.04, "min_child_weight": 5, "subsample": 0.9, "colsample_bytree": 0.9, "reg_lambda": 5.0}, "identity"),
+    ("xgboost-identity-baseline", {}, "identity"),
+    ("xgboost-identity-deep", {"n_estimators": 700, "max_depth": 6, "learning_rate": 0.03, "min_child_weight": 8, "subsample": 0.9, "colsample_bytree": 0.9, "reg_lambda": 8.0}, "identity"),
+    ("xgboost-identity-regularized", {"n_estimators": 500, "max_depth": 5, "learning_rate": 0.035, "min_child_weight": 12, "subsample": 0.8, "colsample_bytree": 0.8, "reg_lambda": 15.0}, "identity"),
 )
 
 
@@ -105,9 +113,13 @@ def load_data(cutoff: pd.Timestamp | None = None) -> tuple[pd.DataFrame, pd.Data
 
 
 def evaluate(observations: pd.DataFrame, context: pd.DataFrame, parameters: dict[str, object], target_transform: str) -> tuple[float, float, int]:
-    cutoff = observations["observed_at"].max() - pd.Timedelta(7, unit="D")
-    history = observations[observations["observed_at"] <= cutoff].copy()
-    validation = observations[observations["observed_at"] > cutoff].copy()
+    """Evaluate on the last two chronological observations of every station."""
+    ordered = observations.sort_values(["station_id", "observed_at"]).copy()
+    validation = ordered.groupby("station_id", sort=False, group_keys=False).tail(2)
+    validation_keys = pd.MultiIndex.from_frame(validation[["station_id", "observed_at"]])
+    history = ordered.set_index(["station_id", "observed_at"])
+    history = history[~history.index.isin(validation_keys)].reset_index()
+    cutoff = history["observed_at"].max()
     context_train = context[context["observed_at"] <= cutoff].copy()
     if history.empty or validation.empty:
         raise RuntimeError("Not enough data for temporal validation")
@@ -115,13 +127,26 @@ def evaluate(observations: pd.DataFrame, context: pd.DataFrame, parameters: dict
     targets = [{"station_id": str(row.station_id), "target_at": row.observed_at.isoformat()} for row in validation.itertuples()]
     predicted = np.asarray(recursive_predict(history, context_train, targets, trained, cutoff), dtype=float)
     actual = validation["demand"].to_numpy(dtype=float)
-    # Match the official leaderboard: average station-level WAPE.
+    # Match the requested protocol: average station-level WAPE over the last
+    # two records per station.
     errors = pd.Series(np.abs(actual - predicted), index=validation.index)
     actual_series = pd.Series(actual, index=validation.index)
     station = validation["station_id"].astype(str)
     station_wape = errors.groupby(station).sum() / actual_series.groupby(station).sum()
     wape = float(station_wape.mean()) if not station_wape.empty else 0.0
     return max(0.0, 100 * (1 - wape)), wape, len(validation)
+
+
+def training_cutoff_for_last_two(observations: pd.DataFrame) -> pd.Timestamp:
+    """Return the cutoff after removing the last two rows of each station."""
+    ordered = observations.sort_values(["station_id", "observed_at"])
+    validation = ordered.groupby("station_id", sort=False, group_keys=False).tail(2)
+    validation_keys = pd.MultiIndex.from_frame(validation[["station_id", "observed_at"]])
+    indexed = ordered.set_index(["station_id", "observed_at"])
+    history = indexed[~indexed.index.isin(validation_keys)]
+    if history.empty:
+        raise RuntimeError("Not enough observations after holding out the last two records per station")
+    return pd.Timestamp(history.index.get_level_values("observed_at").max())
 
 
 def main() -> None:
@@ -134,6 +159,7 @@ def main() -> None:
         requested_cutoff = requested_cutoff.tz_localize("UTC") if requested_cutoff.tzinfo is None else requested_cutoff.tz_convert("UTC")
     observations, context, observations_bytes, context_bytes, stations_bytes, metadata_bytes = load_data(requested_cutoff)
     data_cutoff = observations["observed_at"].max()
+    training_cutoff = training_cutoff_for_last_two(observations)
     if requested_cutoff is not None and data_cutoff > requested_cutoff:
         raise RuntimeError("Training data exceeds the requested cutoff")
     # The public context download can lag the released observation stream.
@@ -168,10 +194,17 @@ def main() -> None:
         current_accuracy = current_metrics.get("validation_accuracy")
         current_aggregation = current_metrics.get("metric_aggregation")
         current_data_cutoff = current_metrics.get("data_cutoff")
-        # Every successful retraining run is an explicit promotion. The
-        # workflow is the operator's promotion gate, so a candidate must not
-        # remain blocked by comparison with the previous champion.
-        promoted = True
+        # Only compare against a champion evaluated with the same protocol.
+        # The previous production champion may have been evaluated on the old
+        # seven-day window, which is not directly comparable.
+        promote_anyway = os.getenv("PROMOTE_ANYWAY", "false").lower() == "true"
+        same_protocol = current_metrics.get("validation_window") == "last_2_records_per_station"
+        promoted = (
+            current_accuracy is None
+            or not same_protocol
+            or winner_accuracy > float(current_accuracy)
+            or promote_anyway
+        )
 
         trained = train(observations, context, winner_parameters, winner_transform)
         trained.parameters = {**(trained.parameters or {}), "candidate": winner_name}
@@ -181,7 +214,7 @@ def main() -> None:
         artifact_bytes = artifact.read_bytes()
         artifact_hash = sha256(artifact_bytes)
         commit = git_commit()
-        validation_metrics = {"feature_count": len(FEATURES), "validation_accuracy": winner_accuracy, "validation_wape": winner_wape, "metric_aggregation": "station_mean_wape", "validation_rows": int(winner["validation_rows"]), "validation_window": "last_7_days_recursive", "data_cutoff": data_cutoff.isoformat(), "target_transform": winner_transform, "parameters": winner_parameters, "candidate_results": candidates}
+        validation_metrics = {"feature_count": len(FEATURES), "validation_accuracy": winner_accuracy, "validation_wape": winner_wape, "metric_aggregation": "station_mean_wape", "validation_rows": int(winner["validation_rows"]), "validation_window": "last_2_records_per_station", "data_cutoff": data_cutoff.isoformat(), "training_cutoff": training_cutoff.isoformat(), "target_transform": winner_transform, "parameters": winner_parameters, "candidate_results": candidates}
         dataset_payload = {"dataset_version": data_version, "api_url": API, "observations_sha256": sha256(observations_bytes), "context_sha256": sha256(context_bytes), "stations_sha256": sha256(stations_bytes), "metadata_sha256": sha256(metadata_bytes), "cutoff_at": data_cutoff.isoformat(), "rows_observations": len(observations), "rows_context": len(context), "metadata": json.loads(metadata_bytes)}
         model_payload = {"model_version": model_version, "dataset_version": data_version, "algorithm": "xgboost", "artifact_sha256": artifact_hash, "artifact_path": f"models/{model_version}.joblib", "git_commit": commit, "status": "candidate", "metrics": validation_metrics, "feature_schema": list(FEATURES)}
         client.post(f"{SUPABASE_URL}/rest/v1/dataset_versions", headers=headers, json=dataset_payload).raise_for_status()
@@ -207,7 +240,7 @@ def main() -> None:
     except Exception as error:
         print(f"[MLflow] Warning: logging failed or skipped: {error.__class__.__name__}")
 
-    print(json.dumps({"dataset_version": data_version, "model_version": model_version, "winner": winner, "current_champion_accuracy": current_accuracy, "promoted": promoted, "artifact_sha256": artifact_hash}))
+    print(json.dumps({"dataset_version": data_version, "model_version": model_version, "winner": winner, "current_champion_accuracy": current_accuracy, "promoted": promoted, "data_cutoff": data_cutoff.isoformat(), "training_cutoff": training_cutoff.isoformat(), "validation_window": "last_2_records_per_station", "artifact_sha256": artifact_hash}))
 
 
 if __name__ == "__main__":

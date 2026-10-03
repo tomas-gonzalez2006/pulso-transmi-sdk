@@ -1,7 +1,16 @@
 import numpy as np
 import pandas as pd
+import importlib.util
+from pathlib import Path
 
 from pulso_transmi.occupancy import build_training_frame, future_features
+
+
+_TRAIN_SCRIPT = Path(__file__).parents[1] / "scripts" / "train_and_version.py"
+_SPEC = importlib.util.spec_from_file_location("train_and_version", _TRAIN_SCRIPT)
+assert _SPEC and _SPEC.loader
+train_and_version = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(train_and_version)
 
 
 class _Trained:
@@ -66,3 +75,23 @@ def test_training_lags_use_timestamps_not_previous_row() -> None:
     # 12:30 has no 12:15 observation, so its lag_1 must not use 20.0.
     row = frame.loc[frame["observed_at"] == observed[1]].iloc[0]
     assert np.isnan(row["lag_1"])
+
+
+def test_retraining_evaluates_ten_unique_candidates() -> None:
+    names = [name for name, _, _ in train_and_version.CANDIDATES]
+
+    assert len(names) == 10
+    assert len(set(names)) == len(names)
+
+
+def test_training_cutoff_excludes_last_two_records_per_station() -> None:
+    observed = pd.date_range("2026-01-01 12:00", periods=4, freq="15min", tz="UTC")
+    observations = pd.DataFrame(
+        {
+            "station_id": ["A"] * 4 + ["B"] * 4,
+            "observed_at": list(observed) * 2,
+            "demand": 1.0,
+        }
+    )
+
+    assert train_and_version.training_cutoff_for_last_two(observations) == observed[1]
